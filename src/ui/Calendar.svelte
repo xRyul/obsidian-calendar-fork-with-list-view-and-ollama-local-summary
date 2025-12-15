@@ -7,7 +7,8 @@
     configureGlobalMomentLocale,
   } from "obsidian-calendar-ui";
   import type { ICalendarSource } from "obsidian-calendar-ui";
-  import { onDestroy } from "svelte";
+  import { onDestroy, onMount } from "svelte";
+  import { slide } from "svelte/transition";
   import type { TFile } from "obsidian";
   import { getDateFromFile, getDateUID } from "obsidian-daily-notes-interface";
 
@@ -30,8 +31,14 @@
   export let onContextMenuDay: (date: Moment, event: MouseEvent) => boolean;
   export let onContextMenuWeek: (date: Moment, event: MouseEvent) => boolean;
 
-  type ViewTab = "calendar" | "list";
-  let activeTab: ViewTab = "calendar";
+  let showList = false;
+  let showListJustOpened = false;
+
+  let calendarBaseWrapperEl: HTMLDivElement | null = null;
+  let listToggleButtonEl: HTMLButtonElement | null = null;
+  let listToggleTop = 0;
+  let listToggleLeft = 0;
+  let listTogglePositioned = false;
 
   type ListItem = {
     date: Moment;
@@ -57,16 +64,16 @@
   let listComputeTimer: number | null = null;
   const LIST_RECOMPUTE_DEBOUNCE_MS = 750;
 
-  function setTab(tab: ViewTab): void {
-    activeTab = tab;
-
-    if (activeTab === "list") {
+  function toggleList(): void {
+    showList = !showList;
+    if (showList) {
+      showListJustOpened = true;
       void computeList();
     }
   }
 
   function scheduleListRecompute(): void {
-    if (activeTab !== "list") {
+    if (!showList) {
       return;
     }
 
@@ -211,11 +218,17 @@
     onClickDay(date, isMetaPressed);
   }
 
-  $: if (activeTab === "list") {
+  $: if (showList) {
     // Recompute when daily note index or threshold changes.
     $dailyNotes;
     $settings.wordsPerDot;
-    scheduleListRecompute();
+
+    // Avoid double-recompute when the user just opened the list view and we already ran computeList().
+    if (showListJustOpened) {
+      showListJustOpened = false;
+    } else {
+      scheduleListRecompute();
+    }
   }
 
   export function tick() {
@@ -241,81 +254,176 @@
     }
   }, 1000 * 60);
 
+  function updateListTogglePosition(): void {
+    if (!calendarBaseWrapperEl || !listToggleButtonEl) {
+      return;
+    }
+
+    const navEl = calendarBaseWrapperEl.querySelector(
+      "#calendar-container .nav"
+    ) as HTMLElement | null;
+    const rightNavEl = calendarBaseWrapperEl.querySelector(
+      "#calendar-container .nav .right-nav"
+    ) as HTMLElement | null;
+    const titleEl = calendarBaseWrapperEl.querySelector(
+      "#calendar-container .nav .title"
+    ) as HTMLElement | null;
+
+    if (!navEl || !rightNavEl || !titleEl) {
+      return;
+    }
+
+    const wrapperRect = calendarBaseWrapperEl.getBoundingClientRect();
+    const navRect = navEl.getBoundingClientRect();
+    const rightNavRect = rightNavEl.getBoundingClientRect();
+    const titleRect = titleEl.getBoundingClientRect();
+    const btnRect = listToggleButtonEl.getBoundingClientRect();
+
+    // Place the toggle between the month/year title and the right-nav group.
+    const gap = 6;
+    const minLeft = titleRect.right - wrapperRect.left + gap;
+    const preferredLeft = rightNavRect.left - wrapperRect.left - btnRect.width - gap;
+
+    const left = Math.max(minLeft, preferredLeft);
+    const top = navRect.top - wrapperRect.top + (navRect.height - btnRect.height) / 2;
+
+    listToggleLeft = Math.round(left);
+    listToggleTop = Math.round(top);
+    listTogglePositioned = true;
+  }
+
+  onMount(() => {
+    const schedule = () => {
+      // CalendarBase mounts inside this component; wait a frame so its DOM is ready.
+      window.requestAnimationFrame(updateListTogglePosition);
+    };
+
+    schedule();
+
+    window.addEventListener("resize", schedule, { passive: true });
+
+    const ro = new ResizeObserver(schedule);
+    if (calendarBaseWrapperEl) {
+      ro.observe(calendarBaseWrapperEl);
+    }
+
+    // Observe nav + title + right-nav changes (locale, font size, etc.).
+    const navEl = calendarBaseWrapperEl?.querySelector(
+      "#calendar-container .nav"
+    ) as HTMLElement | null;
+    const rightNavEl = calendarBaseWrapperEl?.querySelector(
+      "#calendar-container .nav .right-nav"
+    ) as HTMLElement | null;
+    const titleEl = calendarBaseWrapperEl?.querySelector(
+      "#calendar-container .nav .title"
+    ) as HTMLElement | null;
+
+    if (navEl) {
+      ro.observe(navEl);
+    }
+    if (rightNavEl) {
+      ro.observe(rightNavEl);
+    }
+    if (titleEl) {
+      ro.observe(titleEl);
+    }
+
+    return () => {
+      window.removeEventListener("resize", schedule);
+      ro.disconnect();
+    };
+  });
+
   onDestroy(() => {
     clearInterval(heartbeat);
-    if (listComputeTimer) {
+    if (listComputeTimer !== null) {
       window.clearTimeout(listComputeTimer);
     }
   });
 </script>
 
 <div class="calendar-view">
-  <div class="calendar-tab-bar">
-    <button
-      class="calendar-tab"
-      class:is-active={activeTab === "calendar"}
-      type="button"
-      on:click={() => setTab("calendar")}
-    >
-      Calendar
-    </button>
-    <button
-      class="calendar-tab"
-      class:is-active={activeTab === "list"}
-      type="button"
-      on:click={() => setTab("list")}
-    >
-      List
-    </button>
-  </div>
+  <div class="calendar-pane">
+    <div class="calendar-base-wrapper" bind:this={calendarBaseWrapperEl}>
+      <CalendarBase
+        {sources}
+        {today}
+        {onHoverDay}
+        {onHoverWeek}
+        {onContextMenuDay}
+        {onContextMenuWeek}
+        {onClickDay}
+        {onClickWeek}
+        bind:displayedMonth
+        localeData={today.localeData()}
+        selectedId={$activeFile}
+        showWeekNums={$settings.showWeeklyNote}
+      />
 
-  <div class="calendar-pane" class:is-hidden={activeTab !== "calendar"}>
-    <CalendarBase
-      {sources}
-      {today}
-      {onHoverDay}
-      {onHoverWeek}
-      {onContextMenuDay}
-      {onContextMenuWeek}
-      {onClickDay}
-      {onClickWeek}
-      bind:displayedMonth
-      localeData={today.localeData()}
-      selectedId={$activeFile}
-      showWeekNums={$settings.showWeeklyNote}
-    />
-  </div>
-
-  <div class="calendar-pane calendar-list-view" class:is-hidden={activeTab !== "list"}>
-    {#if listLoading}
-      <div class="calendar-list-status">Loading…</div>
-    {:else if listError}
-      <div class="calendar-list-error">{listError}</div>
-    {:else if listGroups.length === 0}
-      <div class="calendar-list-empty">No qualifying daily notes.</div>
-    {/if}
-
-    {#each listGroups as group (group.year)}
-      <details
-        class="calendar-list-year"
-        open={yearOpenState[group.year]}
-        on:toggle={(e) => onToggleYear(group.year, e)}
+      <button
+        class="calendar-list-toggle"
+        class:is-active={showList}
+        class:is-positioned={listTogglePositioned}
+        type="button"
+        aria-label={showList ? "Hide list" : "Show list"}
+        aria-pressed={showList}
+        style={listTogglePositioned
+          ? `top:${listToggleTop}px;left:${listToggleLeft}px;`
+          : ""}
+        bind:this={listToggleButtonEl}
+        on:click={toggleList}
       >
-        <summary>{group.year}</summary>
-
-        <div class="calendar-list-days">
-          {#each group.items as item (item.dateUID)}
-            <button
-              class="calendar-list-day"
-              class:is-active={item.dateUID === $activeFile}
-              type="button"
-              on:click={(e) => onClickListDay(item.date, e)}
-            >
-              {item.dateStr}
-            </button>
-          {/each}
-        </div>
-      </details>
-    {/each}
+        <svg
+          focusable="false"
+          role="img"
+          xmlns="http://www.w3.org/2000/svg"
+          viewBox="0 0 24 24"
+          aria-hidden="true"
+        >
+          <path
+            fill="currentColor"
+            d="M4 6h16v2H4V6zm0 5h16v2H4v-2zm0 5h16v2H4v-2z"
+          />
+        </svg>
+      </button>
+    </div>
   </div>
+
+  {#if showList}
+    <div
+      class="calendar-pane calendar-list-view"
+      transition:slide={{ duration: 140 }}
+    >
+      {#if listLoading}
+        <div class="calendar-list-status">Loading…</div>
+      {:else if listError}
+        <div class="calendar-list-error">{listError}</div>
+      {:else if listGroups.length === 0}
+        <div class="calendar-list-empty">No qualifying daily notes.</div>
+      {/if}
+
+      {#each listGroups as group (group.year)}
+        <details
+          class="calendar-list-year"
+          open={yearOpenState[group.year]}
+          on:toggle={(e) => onToggleYear(group.year, e)}
+        >
+          <summary>{group.year}</summary>
+
+          <div class="calendar-list-days">
+            {#each group.items as item (item.dateUID)}
+              <button
+                class="calendar-list-day"
+                class:is-active={item.dateUID === $activeFile}
+                type="button"
+                on:click={(e) => onClickListDay(item.date, e)}
+              >
+                {item.dateStr}
+              </button>
+            {/each}
+          </div>
+        </details>
+      {/each}
+    </div>
+  {/if}
 </div>
