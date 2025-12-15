@@ -264,14 +264,46 @@
   box-shadow: none;
   background: transparent;
 
+  width: 26px;
   height: 26px;
-  padding: 0 8px;
+  padding: 0;
   border-radius: 6px;
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
 
   color: var(--text-muted);
   cursor: pointer;
 
+  /* Hidden until row hover/focus to keep the list visually clean */
+  opacity: 0;
+
   transition: background-color 120ms ease, color 120ms ease, opacity 120ms ease;
+}
+
+.calendar-view .calendar-list-row:hover .calendar-list-generate,
+.calendar-view .calendar-list-row:focus-within .calendar-list-generate,
+.calendar-view .calendar-list-generate.is-loading {
+  opacity: 1;
+}
+
+.calendar-view .calendar-list-generate svg {
+  width: 16px;
+  height: 16px;
+}
+
+@keyframes calendar-list-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.calendar-view .calendar-list-generate.is-loading svg {
+  animation: calendar-list-spin 900ms linear infinite;
 }
 
 .calendar-view .calendar-list-generate:hover {

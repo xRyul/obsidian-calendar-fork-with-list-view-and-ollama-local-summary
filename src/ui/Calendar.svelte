@@ -17,6 +17,7 @@
   import { createOllamaClient, safeParseJson } from "src/ollama/client";
   import type { OllamaGenerateResponse } from "src/ollama/client";
   import { upsertOllamaTitleCacheEntry } from "src/ollama/cache";
+  import type { OllamaTitleCache } from "src/ollama/cache";
   import {
     buildDailyTitlePrompt,
     DAILY_TITLE_SCHEMA,
@@ -152,13 +153,16 @@
     return wordCount;
   }
 
-  function getCachedOllamaTitle(item: ListItem): string | null {
-    const enabled = !!$settings.ollamaTitlesEnabled;
+  function getCachedOllamaTitle(
+    item: ListItem,
+    enabled: boolean,
+    cache: OllamaTitleCache | null | undefined
+  ): string | null {
     if (!enabled) {
       return null;
     }
 
-    const entry = $ollamaTitleCache?.[item.filePath];
+    const entry = cache?.[item.filePath];
     if (entry && entry.mtime === item.mtime && entry.title) {
       return entry.title;
     }
@@ -566,7 +570,11 @@
                   on:click={(e) => onClickListDay(item.date, e)}
                 >
                   <span class="calendar-list-day-label">
-                    {getCachedOllamaTitle(item) ?? item.dateStr}
+                    {getCachedOllamaTitle(
+                      item,
+                      $settings.ollamaTitlesEnabled,
+                      $ollamaTitleCache
+                    ) ?? item.dateStr}
                   </span>
                 </button>
 
@@ -575,12 +583,23 @@
                     class="calendar-list-generate"
                     class:is-loading={titleInFlight[item.filePath]}
                     type="button"
-                    aria-label="Generate title"
-                    title="Generate title"
+                    aria-label="Generate / refresh title"
+                    title="Generate / refresh title"
                     disabled={titleInFlight[item.filePath]}
                     on:click={(e) => onClickGenerateTitle(item, e)}
                   >
-                    {titleInFlight[item.filePath] ? "…" : "Gen"}
+                    <svg
+                      focusable="false"
+                      role="img"
+                      xmlns="http://www.w3.org/2000/svg"
+                      viewBox="0 0 24 24"
+                      aria-hidden="true"
+                    >
+                      <path
+                        fill="currentColor"
+                        d="M17.65 6.35A7.95 7.95 0 0 0 12 4a8 8 0 1 0 7.9 9.4 1 1 0 1 0-1.97-.35A6 6 0 1 1 12 6c1.66 0 3.14.69 4.22 1.78L14 10h6V4l-2.35 2.35Z"
+                      />
+                    </svg>
                   </button>
                 {/if}
               </div>
