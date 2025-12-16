@@ -9,6 +9,10 @@ export function getDefaultSettings(
       weekStart: "sunday",
       shouldConfirmBeforeCreate: false,
       wordsPerDot: 50,
+
+      listViewMinWords: 0,
+      listViewIncludeCreatedDays: true,
+
       showWeeklyNote: false,
       weeklyNoteFolder: "",
       weeklyNoteFormat: "",

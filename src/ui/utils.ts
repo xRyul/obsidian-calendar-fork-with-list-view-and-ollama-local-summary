@@ -34,17 +34,47 @@ export function partition(
 }
 
 /**
- * Lookup the dateUID for a given file. It compares the filename
- * to the daily and weekly note formats to find a match.
+ * Lookup the dateUID for a given file.
  *
- * @param file
+ * If daily/weekly note indexes are provided, this will ONLY return a UID when
+ * the file is actually one of the indexed daily/weekly notes (prevents false
+ * highlights for arbitrary files that happen to match a date format).
  */
-export function getDateUIDFromFile(file: TFile | null): string {
+export function getDateUIDFromFile(
+  file: TFile | null,
+  dailyNotesRecord?: Record<string, TFile> | null,
+  weeklyNotesRecord?: Record<string, TFile> | null
+): string {
   if (!file) {
     return null;
   }
 
-  // TODO: I'm not checking the path!
+  const path = file.path;
+  const hasIndexes = !!dailyNotesRecord || !!weeklyNotesRecord;
+
+  const isInIndex = (record: Record<string, TFile> | null | undefined): boolean => {
+    if (!record || !path) {
+      return false;
+    }
+    return Object.values(record).some((f) => f?.path === path);
+  };
+
+  // Strict mode when indexes are provided.
+  if (hasIndexes) {
+    if (isInIndex(dailyNotesRecord)) {
+      const date = getDateFromFile(file, "day");
+      return date ? getDateUID(date, "day") : null;
+    }
+
+    if (isInIndex(weeklyNotesRecord)) {
+      const date = getDateFromFile(file, "week");
+      return date ? getDateUID(date, "week") : null;
+    }
+
+    return null;
+  }
+
+  // Legacy behavior (best-effort by filename only).
   let date = getDateFromFile(file, "day");
   if (date) {
     return getDateUID(date, "day");
@@ -54,6 +84,7 @@ export function getDateUIDFromFile(file: TFile | null): string {
   if (date) {
     return getDateUID(date, "week");
   }
+
   return null;
 }
 

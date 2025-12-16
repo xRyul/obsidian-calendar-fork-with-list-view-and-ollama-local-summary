@@ -13,7 +13,13 @@
   import type { EventRef, TFile } from "obsidian";
   import { getDateFromFile, getDateUID } from "obsidian-daily-notes-interface";
 
-  import { DEFAULT_WORDS_PER_DOT } from "src/constants";
+  import { buildListItems } from "./listViewModel";
+  import type {
+    CreatedOnDayBucket,
+    DailyNoteCandidate,
+    ListItem,
+    YearGroup,
+  } from "./listViewModel";
   import {
     createOllamaClient,
     isModelInstalled,
@@ -189,7 +195,13 @@
   }
 
   async function showTooltipFor(el: HTMLElement): Promise<void> {
-    const text = el.getAttribute("data-tooltip") || el.getAttribute("aria-label") || "";
+    // NOTE: Obsidian core uses attributes like `data-tooltip` / `aria-label` to render its own tooltips.
+    // Use a plugin-scoped attribute to avoid double-tooltips.
+    const text =
+      el.getAttribute("data-calendar-tooltip") ||
+      el.getAttribute("data-tooltip") ||
+      el.getAttribute("aria-label") ||
+      "";
     if (!text) {
       hideTooltip();
       return;
@@ -229,6 +241,8 @@
 
   // Unique IDs for menu fields (avoid collisions if multiple Calendar views are open).
   const ollamaIdPrefix = `calendar-ollama-${Math.random().toString(36).slice(2, 8)}`;
+  const listMinWordsInputId = `${ollamaIdPrefix}-list-minwords`;
+  const listIncludeCreatedInputId = `${ollamaIdPrefix}-list-include-created`;
   const ollamaUrlInputId = `${ollamaIdPrefix}-url`;
   const ollamaModelInputId = `${ollamaIdPrefix}-model`;
   const ollamaMaxCharsInputId = `${ollamaIdPrefix}-maxchars`;
@@ -390,6 +404,20 @@
     return Number.isFinite(num) ? num : undefined;
   }
 
+  async function onChangeListViewMinWords(event: Event): Promise<void> {
+    const el = event.currentTarget as HTMLInputElement;
+    const raw = el?.value ?? "";
+
+    const parsed = raw === "" ? 0 : Number(raw);
+    const next = Number.isFinite(parsed) ? Math.max(0, parsed) : 0;
+    await writeOptions({ listViewMinWords: next });
+  }
+
+  async function onToggleListViewIncludeCreatedDays(event: Event): Promise<void> {
+    const el = event.currentTarget as HTMLInputElement;
+    await writeOptions({ listViewIncludeCreatedDays: !!el?.checked });
+  }
+
   async function onChangeOllamaBaseUrl(event: Event): Promise<void> {
     const el = event.currentTarget as HTMLInputElement;
     const next = normalizeOllamaBaseUrl(el?.value ?? "");
@@ -493,18 +521,6 @@
     calendarBaseWrapperEl.style.setProperty("--calendar-scale", String(rounded));
   }
 
-  type ListItem = {
-    date: Moment;
-    dateUID: string;
-    dateStr: string;
-    epoch: number;
-    year: number;
-
-    file?: TFile;
-    filePath: string;
-    mtime: number;
-  };
-  type YearGroup = { year: number; items: ListItem[] };
 
   let listGroups: YearGroup[] = [];
   let listLoading = false;
@@ -516,11 +532,10 @@
   // Track open/closed state for each day (nested under year).
   let dayOpenState: Record<string, boolean> = {};
 
-  type DayChildKey = "notes" | "files";
-  type DayChildOpenState = { notes: boolean; files: boolean };
+  type DayChildKey = "files";
+  type DayChildOpenState = { files: boolean };
   let dayChildOpenState: Record<string, DayChildOpenState> = {};
 
-  type CreatedOnDayBucket = { notes: TFile[]; files: TFile[] };
   let createdOnDayIndex: Record<string, CreatedOnDayBucket> = {};
   let createdOnDayIndexLoading = false;
   let createdOnDayIndexError: string | null = null;
@@ -528,6 +543,8 @@
   let createdOnDayIndexNonce = 0;
   let createdOnDayIndexTimer: number | null = null;
   const CREATED_ON_DAY_RECOMPUTE_DEBOUNCE_MS = 1200;
+
+  let prevListViewIncludeCreatedDays: boolean | null = null;
 
   const wordCountCache = new Map<string, { mtime: number; wordCount: number }>();
   let titleInFlight: Record<string, boolean> = {};
@@ -543,7 +560,9 @@
     if (showList) {
       showListJustOpened = true;
       void computeList();
-      void rebuildCreatedOnDayIndex();
+      if ($settings.listViewIncludeCreatedDays) {
+        void rebuildCreatedOnDayIndex();
+      }
     }
   }
 
@@ -585,6 +604,14 @@
   }
 
   async function rebuildCreatedOnDayIndex(): Promise<void> {
+    if (!$settings.listViewIncludeCreatedDays) {
+      createdOnDayIndex = {};
+      createdOnDayIndexLoading = false;
+      createdOnDayIndexError = null;
+      scheduleListRecompute();
+      return;
+    }
+
     const nonce = ++createdOnDayIndexNonce;
     createdOnDayIndexLoading = true;
     createdOnDayIndexError = null;
@@ -666,7 +693,7 @@
   }
 
   function scheduleCreatedOnDayIndexRebuild(): void {
-    if (!showList) {
+    if (!showList || !$settings.listViewIncludeCreatedDays) {
       return;
     }
 
@@ -815,10 +842,11 @@
       const dailyNotesRecord = $dailyNotes ?? {};
       const files = Object.values(dailyNotesRecord).filter(Boolean) as TFile[];
 
-      const wordsPerDot = $settings.wordsPerDot ?? DEFAULT_WORDS_PER_DOT;
-      const includeAll = wordsPerDot <= 0;
+      const listViewMinWords = $settings.listViewMinWords ?? 0;
+      const includeAll = listViewMinWords <= 0;
+      const includeCreatedDays = $settings.listViewIncludeCreatedDays ?? true;
 
-      const items: ListItem[] = [];
+      const candidates: DailyNoteCandidate[] = [];
       const concurrency = 10;
 
       for (let i = 0; i < files.length; i += concurrency) {
@@ -830,11 +858,10 @@
               return null;
             }
 
+            let qualifies = true;
             if (!includeAll) {
               const wordCount = await getCachedWordCount(file);
-              if (wordCount < wordsPerDot) {
-                return null;
-              }
+              qualifies = wordCount >= listViewMinWords;
             }
 
             return {
@@ -847,7 +874,9 @@
               file,
               filePath: file.path,
               mtime: file.stat?.mtime ?? 0,
-            } as ListItem;
+
+              qualifies,
+            } as DailyNoteCandidate;
           })
         );
 
@@ -855,37 +884,20 @@
           return;
         }
 
-        for (const item of chunkResults) {
-          if (item) {
-            items.push(item);
+        for (const cand of chunkResults) {
+          if (cand) {
+            candidates.push(cand);
           }
         }
       }
 
-      items.sort((a, b) => b.epoch - a.epoch);
-
-      // Ensure days with created notes/files appear even without a qualifying daily note
-      if (createdOnDayIndex && typeof createdOnDayIndex === "object") {
-        for (const dateStr of Object.keys(createdOnDayIndex)) {
-          const exists = items.some((it) => it.dateStr === dateStr);
-          if (!exists) {
-            const date = window.moment(dateStr, "YYYY-MM-DD");
-            if (date?.isValid?.()) {
-              items.push({
-                date,
-                dateUID: getDateUID(date, "day"),
-                dateStr,
-                epoch: date.valueOf(),
-                year: date.year(),
-                filePath: "",
-                mtime: 0,
-              } as ListItem);
-            }
-          }
-        }
-      }
-
-      items.sort((a, b) => b.epoch - a.epoch);
+      const items = buildListItems({
+        dailyNoteCandidates: candidates,
+        createdOnDayIndex: includeCreatedDays ? createdOnDayIndex : {},
+        includeCreatedDays,
+        parseDateStr: (dateStr) => window.moment(dateStr, "YYYY-MM-DD"),
+        getDayDateUID: (date) => getDateUID(date, "day"),
+      });
 
       const yearToItems = new Map<number, ListItem[]>();
       for (const item of items) {
@@ -936,8 +948,8 @@
 
         const prevChild = nextDayChildOpenState[item.dateUID];
         nextDayChildOpenState[item.dateUID] = prevChild
-          ? { notes: !!prevChild.notes, files: !!prevChild.files }
-          : { notes: false, files: false };
+          ? { files: !!prevChild.files }
+          : { files: false };
       }
 
       for (const key of Object.keys(nextDayOpenState)) {
@@ -985,7 +997,7 @@
     event: Event
   ): void {
     const el = event.currentTarget as HTMLDetailsElement;
-    const prev = dayChildOpenState[dateUID] ?? { notes: false, files: false };
+    const prev = dayChildOpenState[dateUID] ?? { files: false };
     dayChildOpenState = {
       ...dayChildOpenState,
       [dateUID]: { ...prev, [child]: el.open },
@@ -993,6 +1005,10 @@
   }
 
   function getCreatedNotesForItem(item: ListItem): TFile[] {
+    if (!$settings.listViewIncludeCreatedDays) {
+      return [];
+    }
+
     const bucket = createdOnDayIndex[item.dateStr];
     if (!bucket?.notes?.length) {
       return [];
@@ -1001,11 +1017,19 @@
   }
 
   function getCreatedFilesForItem(item: ListItem): TFile[] {
+    if (!$settings.listViewIncludeCreatedDays) {
+      return [];
+    }
+
     const bucket = createdOnDayIndex[item.dateStr];
     return bucket?.files ?? [];
   }
 
   function hasDayChildren(item: ListItem): boolean {
+    if (!$settings.listViewIncludeCreatedDays) {
+      return false;
+    }
+
     const notes = getCreatedNotesForItem(item);
     const files = getCreatedFilesForItem(item);
     return (notes && notes.length > 0) || (files && files.length > 0);
@@ -1055,10 +1079,30 @@
     onClickDay(date, isMetaPressed);
   }
 
+  $: {
+    const includeCreatedDays = $settings.listViewIncludeCreatedDays ?? true;
+
+    // If the user enables created-on-day while List view is open, kick off a rebuild.
+    if (showList && includeCreatedDays && prevListViewIncludeCreatedDays === false) {
+      void rebuildCreatedOnDayIndex();
+    }
+
+    // If the user disables it, clear index-derived UI immediately.
+    if (showList && !includeCreatedDays && prevListViewIncludeCreatedDays === true) {
+      createdOnDayIndex = {};
+      createdOnDayIndexLoading = false;
+      createdOnDayIndexError = null;
+      scheduleListRecompute();
+    }
+
+    prevListViewIncludeCreatedDays = includeCreatedDays;
+  }
+
   $: if (showList) {
-    // Recompute when daily note index or threshold changes.
+    // Recompute when daily note index or list settings change.
     $dailyNotes;
-    $settings.wordsPerDot;
+    $settings.listViewMinWords;
+    $settings.listViewIncludeCreatedDays;
 
     // Avoid double-recompute when the user just opened the list view and we already ran computeList().
     if (showListJustOpened) {
@@ -1288,7 +1332,7 @@
             class="calendar-ollama-settings-toggle"
             class:is-active={showOllamaMenu}
             type="button"
-            aria-label="Ollama settings"
+            aria-label="List view settings"
             aria-haspopup="menu"
             aria-expanded={showOllamaMenu}
             bind:this={ollamaSettingsButtonEl}
@@ -1330,210 +1374,265 @@
             >
               <div class="calendar-ollama-menu-row calendar-ollama-menu-row--top">
                 <div class="calendar-ollama-menu-title">
-                  <span>Ollama</span>
-                  <span
-                    class="calendar-tip"
-                    data-tooltip="AI titles in list view (no renames)"
-                    tabindex="0"
-                    aria-label="AI titles in list view (no renames)"
-                    on:mouseenter={onTipEnter}
-                    on:mouseleave={onTipLeave}
-                    on:focus={onTipEnter}
-                    on:blur={onTipLeave}
-                  >
-                    i
-                  </span>
+                  <span>List view</span>
                 </div>
-
-                <label class="calendar-ollama-toggle" title="Enable / disable">
-                  <input
-                    type="checkbox"
-                    checked={$settings.ollamaTitlesEnabled}
-                    on:change={onToggleOllamaEnabled}
-                  />
-                  <span class="calendar-ollama-toggle-track" aria-hidden="true"></span>
-                </label>
               </div>
 
-              {#if $settings.ollamaTitlesEnabled}
-                <div class="calendar-ollama-menu-section">
-                  <div class="calendar-ollama-field">
-                    <label for={ollamaUrlInputId}>
-                      URL
-                      <span
-                        class="calendar-tip"
-                        data-tooltip="Usually http://127.0.0.1:11434"
-                        tabindex="0"
-                        aria-label="Usually http://127.0.0.1:11434"
-                        on:mouseenter={onTipEnter}
-                        on:mouseleave={onTipLeave}
-                        on:focus={onTipEnter}
-                        on:blur={onTipLeave}
-                      >
-                        ?
-                      </span>
-                    </label>
-                    <input
-                      id={ollamaUrlInputId}
-                      type="text"
-                      value={$settings.ollamaBaseUrl}
-                      placeholder="http://127.0.0.1:11434"
-                      on:change={onChangeOllamaBaseUrl}
-                    />
-                  </div>
-
-                  <div class="calendar-ollama-field">
-                    <label for={ollamaModelInputId}>
-                      Model
-                      <span
-                        class="calendar-tip"
-                        data-tooltip="e.g. gemma3:4b"
-                        tabindex="0"
-                        aria-label="e.g. gemma3:4b"
-                        on:mouseenter={onTipEnter}
-                        on:mouseleave={onTipLeave}
-                        on:focus={onTipEnter}
-                        on:blur={onTipLeave}
-                      >
-                        ?
-                      </span>
-                    </label>
-                    <input
-                      id={ollamaModelInputId}
-                      type="text"
-                      value={$settings.ollamaModel}
-                      placeholder="gemma3:4b"
-                      on:change={onChangeOllamaModel}
-                    />
-                  </div>
-
-                  <div class="calendar-ollama-field">
-                    <label for={ollamaMaxCharsInputId}>
-                      Max chars
-                      <span
-                        class="calendar-tip"
-                        data-tooltip="Truncates note text"
-                        tabindex="0"
-                        aria-label="Truncates note text"
-                        on:mouseenter={onTipEnter}
-                        on:mouseleave={onTipLeave}
-                        on:focus={onTipEnter}
-                        on:blur={onTipLeave}
-                      >
-                        ?
-                      </span>
-                    </label>
-                    <input
-                      id={ollamaMaxCharsInputId}
-                      type="number"
-                      value={String($settings.ollamaMaxChars ?? "")}
-                      placeholder="8000"
-                      on:change={onChangeOllamaMaxChars}
-                    />
-                  </div>
-
-                  <div class="calendar-ollama-field">
-                    <label for={ollamaTimeoutInputId}>
-                      Timeout
-                      <span
-                        class="calendar-tip"
-                        data-tooltip="ms (status + generate)"
-                        tabindex="0"
-                        aria-label="ms (status + generate)"
-                        on:mouseenter={onTipEnter}
-                        on:mouseleave={onTipLeave}
-                        on:focus={onTipEnter}
-                        on:blur={onTipLeave}
-                      >
-                        ?
-                      </span>
-                    </label>
-                    <input
-                      id={ollamaTimeoutInputId}
-                      type="number"
-                      value={String($settings.ollamaRequestTimeoutMs ?? "")}
-                      placeholder="15000"
-                      on:change={onChangeOllamaTimeout}
-                    />
-                  </div>
-
-                  <div class="calendar-ollama-field">
-                    <label for={ollamaCacheInputId}>
-                      Cache
-                      <span
-                        class="calendar-tip"
-                        data-tooltip="Max saved titles"
-                        tabindex="0"
-                        aria-label="Max saved titles"
-                        on:mouseenter={onTipEnter}
-                        on:mouseleave={onTipLeave}
-                        on:focus={onTipEnter}
-                        on:blur={onTipLeave}
-                      >
-                        ?
-                      </span>
-                    </label>
-                    <input
-                      id={ollamaCacheInputId}
-                      type="number"
-                      value={String($settings.ollamaTitleCacheMaxEntries ?? "")}
-                      placeholder="1000"
-                      on:change={onChangeOllamaCacheSize}
-                    />
-                  </div>
+              <div class="calendar-ollama-menu-section">
+                <div class="calendar-ollama-field">
+                  <label for={listMinWordsInputId}>
+                    Min words
+                    <span
+                      class="calendar-tip"
+                      data-calendar-tooltip="Hide days whose daily note has fewer than this many words (0 = show all)."
+                      tabindex="0"
+                      on:mouseenter={onTipEnter}
+                      on:mouseleave={onTipLeave}
+                      on:focus={onTipEnter}
+                      on:blur={onTipLeave}
+                    >
+                      ?
+                    </span>
+                  </label>
+                  <input
+                    id={listMinWordsInputId}
+                    type="number"
+                    value={String($settings.listViewMinWords ?? 0)}
+                    placeholder="0"
+                    on:change={onChangeListViewMinWords}
+                  />
                 </div>
 
-                <div class="calendar-ollama-menu-actions">
-                  <button
-                    class="calendar-ollama-action"
-                    type="button"
-                    disabled={ollamaStatusState === "checking"}
-                    title="Check status"
-                    on:click={() => void refreshOllamaStatus()}
-                  >
-                    Check
-                  </button>
+                <div class="calendar-ollama-field">
+                  <label for={listIncludeCreatedInputId}>
+                    Created items
+                    <span
+                      class="calendar-tip"
+                      data-calendar-tooltip="Include notes & attahments created on that date (by file creation time), even if there is no daily note."
+                      tabindex="0"
+                      on:mouseenter={onTipEnter}
+                      on:mouseleave={onTipLeave}
+                      on:focus={onTipEnter}
+                      on:blur={onTipLeave}
+                    >
+                      ?
+                    </span>
+                  </label>
 
-                  <button
-                    class="calendar-ollama-action"
-                    type="button"
-                    disabled={pullingModel}
-                    title={`Pull ${OLLAMA_PULL_MODEL}`}
-                    on:click={onClickPullModel}
-                  >
-                    {pullingModel ? "Pulling…" : "Pull"}
-                  </button>
+                  <label class="calendar-ollama-toggle" title="Include created-on-day items">
+                    <input
+                      id={listIncludeCreatedInputId}
+                      type="checkbox"
+                      checked={$settings.listViewIncludeCreatedDays}
+                      on:change={onToggleListViewIncludeCreatedDays}
+                    />
+                    <span class="calendar-ollama-toggle-track" aria-hidden="true"></span>
+                  </label>
+                </div>
+              </div>
 
-                  <button
-                    class="calendar-ollama-action calendar-ollama-action--danger"
-                    type="button"
-                    title="Clear cached titles"
-                    on:click={() => void clearGeneratedTitles()}
-                  >
-                    Clear
-                  </button>
+              <div class="calendar-ollama-menu-section">
+                <div class="calendar-ollama-menu-row">
+                  <div class="calendar-ollama-menu-title">
+                    <span>Ollama</span>
+                    <span
+                      class="calendar-tip"
+                      data-calendar-tooltip="Toggle on to enable local Ollama for list title generation (no file renames)."
+                      tabindex="0"
+                      on:mouseenter={onTipEnter}
+                      on:mouseleave={onTipLeave}
+                      on:focus={onTipEnter}
+                      on:blur={onTipLeave}
+                    >
+                      i
+                    </span>
+                  </div>
+
+                  <label class="calendar-ollama-toggle" title="Enable / disable">
+                    <input
+                      type="checkbox"
+                      checked={$settings.ollamaTitlesEnabled}
+                      on:change={onToggleOllamaEnabled}
+                    />
+                    <span class="calendar-ollama-toggle-track" aria-hidden="true"></span>
+                  </label>
                 </div>
 
-                <div
-                  class="calendar-ollama-menu-status"
-                  class:is-error={ollamaStatusState === "error"}
-                  title={ollamaStatusDetails || undefined}
-                >
-                  <span
-                    class="calendar-ollama-status-dot"
-                    class:is-ok={ollamaStatusState === "ok"}
+                {#if $settings.ollamaTitlesEnabled}
+                  <div class="calendar-ollama-menu-fields">
+                    <div class="calendar-ollama-field">
+                      <label for={ollamaUrlInputId}>
+                        URL
+                        <span
+                          class="calendar-tip"
+                          data-calendar-tooltip="Usually http://127.0.0.1:11434"
+                          tabindex="0"
+                          on:mouseenter={onTipEnter}
+                          on:mouseleave={onTipLeave}
+                          on:focus={onTipEnter}
+                          on:blur={onTipLeave}
+                        >
+                          ?
+                        </span>
+                      </label>
+                      <input
+                        id={ollamaUrlInputId}
+                        type="text"
+                        value={$settings.ollamaBaseUrl}
+                        placeholder="http://127.0.0.1:11434"
+                        on:change={onChangeOllamaBaseUrl}
+                      />
+                    </div>
+
+                    <div class="calendar-ollama-field">
+                      <label for={ollamaModelInputId}>
+                        Model
+                        <span
+                          class="calendar-tip"
+                          data-calendar-tooltip="e.g. gemma3:4b"
+                          tabindex="0"
+                          on:mouseenter={onTipEnter}
+                          on:mouseleave={onTipLeave}
+                          on:focus={onTipEnter}
+                          on:blur={onTipLeave}
+                        >
+                          ?
+                        </span>
+                      </label>
+                      <input
+                        id={ollamaModelInputId}
+                        type="text"
+                        value={$settings.ollamaModel}
+                        placeholder="gemma3:4b"
+                        on:change={onChangeOllamaModel}
+                      />
+                    </div>
+
+                    <div class="calendar-ollama-field">
+                      <label for={ollamaMaxCharsInputId}>
+                        Max chars
+                        <span
+                          class="calendar-tip"
+                          data-calendar-tooltip="Truncates note text"
+                          tabindex="0"
+                          on:mouseenter={onTipEnter}
+                          on:mouseleave={onTipLeave}
+                          on:focus={onTipEnter}
+                          on:blur={onTipLeave}
+                        >
+                          ?
+                        </span>
+                      </label>
+                      <input
+                        id={ollamaMaxCharsInputId}
+                        type="number"
+                        value={String($settings.ollamaMaxChars ?? "")}
+                        placeholder="8000"
+                        on:change={onChangeOllamaMaxChars}
+                      />
+                    </div>
+
+                    <div class="calendar-ollama-field">
+                      <label for={ollamaTimeoutInputId}>
+                        Timeout
+                        <span
+                          class="calendar-tip"
+                          data-calendar-tooltip="ms (status + generate)"
+                          tabindex="0"
+                          on:mouseenter={onTipEnter}
+                          on:mouseleave={onTipLeave}
+                          on:focus={onTipEnter}
+                          on:blur={onTipLeave}
+                        >
+                          ?
+                        </span>
+                      </label>
+                      <input
+                        id={ollamaTimeoutInputId}
+                        type="number"
+                        value={String($settings.ollamaRequestTimeoutMs ?? "")}
+                        placeholder="15000"
+                        on:change={onChangeOllamaTimeout}
+                      />
+                    </div>
+
+                    <div class="calendar-ollama-field">
+                      <label for={ollamaCacheInputId}>
+                        Cache
+                        <span
+                          class="calendar-tip"
+                          data-calendar-tooltip="Max saved titles"
+                          tabindex="0"
+                          on:mouseenter={onTipEnter}
+                          on:mouseleave={onTipLeave}
+                          on:focus={onTipEnter}
+                          on:blur={onTipLeave}
+                        >
+                          ?
+                        </span>
+                      </label>
+                      <input
+                        id={ollamaCacheInputId}
+                        type="number"
+                        value={String($settings.ollamaTitleCacheMaxEntries ?? "")}
+                        placeholder="1000"
+                        on:change={onChangeOllamaCacheSize}
+                      />
+                    </div>
+                  </div>
+
+                  <div class="calendar-ollama-menu-actions">
+                    <button
+                      class="calendar-ollama-action"
+                      type="button"
+                      disabled={ollamaStatusState === "checking"}
+                      title="Check status"
+                      on:click={() => void refreshOllamaStatus()}
+                    >
+                      Check
+                    </button>
+
+                    <button
+                      class="calendar-ollama-action"
+                      type="button"
+                      disabled={pullingModel}
+                      title={`Pull ${OLLAMA_PULL_MODEL}`}
+                      on:click={onClickPullModel}
+                    >
+                      {pullingModel ? "Pulling…" : "Pull"}
+                    </button>
+
+                    <button
+                      class="calendar-ollama-action calendar-ollama-action--danger"
+                      type="button"
+                      title="Clear cached titles"
+                      on:click={() => void clearGeneratedTitles()}
+                    >
+                      Clear
+                    </button>
+                  </div>
+
+                  <div
+                    class="calendar-ollama-menu-status"
                     class:is-error={ollamaStatusState === "error"}
-                    class:is-checking={ollamaStatusState === "checking"}
-                    aria-hidden="true"
-                  ></span>
-                  <div class="calendar-ollama-menu-status-text">
-                    <div class="calendar-ollama-menu-status-label">{ollamaStatusLabel}</div>
-                    {#if ollamaStatusDetails}
-                      <div class="calendar-ollama-menu-status-details">{ollamaStatusDetails}</div>
-                    {/if}
+                    title={ollamaStatusDetails || undefined}
+                  >
+                    <span
+                      class="calendar-ollama-status-dot"
+                      class:is-ok={ollamaStatusState === "ok"}
+                      class:is-error={ollamaStatusState === "error"}
+                      class:is-checking={ollamaStatusState === "checking"}
+                      aria-hidden="true"
+                    ></span>
+                    <div class="calendar-ollama-menu-status-text">
+                      <div class="calendar-ollama-menu-status-label">{ollamaStatusLabel}</div>
+                      {#if ollamaStatusDetails}
+                        <div class="calendar-ollama-menu-status-details">{ollamaStatusDetails}</div>
+                      {/if}
+                    </div>
                   </div>
-                </div>
-              {/if}
+                {/if}
+              </div>
             </div>
 
             {#if showTooltip}
@@ -1563,7 +1662,11 @@
       {:else if listError}
         <div class="calendar-list-error">{listError}</div>
       {:else if listGroups.length === 0}
-        <div class="calendar-list-empty">No qualifying daily notes.</div>
+        <div class="calendar-list-empty">
+          {$settings.listViewIncludeCreatedDays
+            ? "No daily notes or created items."
+            : "No daily notes."}
+        </div>
       {/if}
 
       {#each listGroups as group (group.year)}
@@ -1599,6 +1702,7 @@
                     <button
                       class="calendar-list-day"
                       class:is-active={item.dateUID === $activeFile}
+                      class:is-missing-daily={!item.dailyNoteExists}
                       type="button"
                       on:click={(e) => onClickListDay(item.date, e)}
                     >
@@ -1639,7 +1743,8 @@
                 </summary>
 
                 {#if dayOpenState[item.dateUID]}
-                  <div class="calendar-list-day-children">
+                  {#if $settings.listViewIncludeCreatedDays}
+                    <div class="calendar-list-day-children">
                     <!-- Notes created on this day, shown directly without a subgroup -->
                     <div class="calendar-list-subitems">
                       {#if createdOnDayIndexLoading}
@@ -1702,17 +1807,14 @@
                                 </span>
                                 
                               </div>
-                            {:else}
-                              <div class="calendar-list-subempty">
-                                No attachments created on this day.
-                              </div>
                             {/each}
                           {/if}
                         </div>
                       {/if}
                     </details>
                    {/if}
-                  </div>
+                    </div>
+                  {/if}
                 {/if}
               </details>
             {/each}
@@ -1722,3 +1824,10 @@
     </div>
   {/if}
 </div>
+
+<style>
+  .calendar-list-day.is-missing-daily {
+    color: var(--text-faint);
+    opacity: 0.75;
+  }
+</style>

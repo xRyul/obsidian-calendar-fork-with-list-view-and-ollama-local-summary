@@ -3,7 +3,7 @@ import {
   getAllDailyNotes,
   getAllWeeklyNotes,
 } from "obsidian-daily-notes-interface";
-import { writable } from "svelte/store";
+import { get, writable } from "svelte/store";
 
 import type { OllamaTitleCache } from "src/ollama/cache";
 import { defaultSettings, ISettings } from "src/settings";
@@ -65,7 +65,7 @@ function createSelectedFileStore() {
 
   return {
     setFile: (file: TFile) => {
-      const id = getDateUIDFromFile(file);
+      const id = getDateUIDFromFile(file, get(dailyNotes), get(weeklyNotes));
       store.set(id);
     },
     ...store,

@@ -15,6 +15,10 @@ export interface ISettings {
   weekStart: IWeekStartOption;
   shouldConfirmBeforeCreate: boolean;
 
+  // List view settings
+  listViewMinWords: number;
+  listViewIncludeCreatedDays: boolean;
+
   // Weekly Note settings
   showWeeklyNote: boolean;
   weeklyNoteFormat: string;
@@ -47,6 +51,9 @@ export const defaultSettings = Object.freeze({
   weekStart: "locale" as IWeekStartOption,
 
   wordsPerDot: DEFAULT_WORDS_PER_DOT,
+
+  listViewMinWords: 0,
+  listViewIncludeCreatedDays: true,
 
   showWeeklyNote: false,
   weeklyNoteFormat: "",

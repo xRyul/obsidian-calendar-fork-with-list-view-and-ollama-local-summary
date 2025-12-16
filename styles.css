@@ -262,6 +262,21 @@
   align-items: center;
 }
 
+/* Right-align the toggle control when used as the field value */
+.calendar-ollama-menu .calendar-ollama-field .calendar-ollama-toggle {
+  justify-self: end;
+}
+
+/* Fields block inside a section (adds divider from the section header row) */
+.calendar-ollama-menu .calendar-ollama-menu-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+
+  border-top: 1px solid var(--background-modifier-border);
+  padding-top: 8px;
+}
+
 .calendar-ollama-menu .calendar-ollama-field label {
   display: inline-flex;
   align-items: center;
