@@ -7,14 +7,19 @@
     configureGlobalMomentLocale,
   } from "obsidian-calendar-ui";
   import type { ICalendarSource } from "obsidian-calendar-ui";
-  import { onDestroy, onMount } from "svelte";
+  import { onDestroy, onMount, tick as svelteTick } from "svelte";
   import { slide } from "svelte/transition";
   import { Notice } from "obsidian";
   import type { EventRef, TFile } from "obsidian";
   import { getDateFromFile, getDateUID } from "obsidian-daily-notes-interface";
 
   import { DEFAULT_WORDS_PER_DOT } from "src/constants";
-  import { createOllamaClient, safeParseJson } from "src/ollama/client";
+  import {
+    createOllamaClient,
+    isModelInstalled,
+    normalizeOllamaBaseUrl,
+    safeParseJson,
+  } from "src/ollama/client";
   import type { OllamaGenerateResponse } from "src/ollama/client";
   import { upsertOllamaTitleCacheEntry } from "src/ollama/cache";
   import type { OllamaTitleCache } from "src/ollama/cache";
@@ -53,8 +58,413 @@
   let showListJustOpened = false;
 
   let calendarBaseWrapperEl: HTMLDivElement | null = null;
+
+  // Inserted into the Calendar header (nav) after mount.
+  let listControlsEl: HTMLDivElement | null = null;
   let listToggleButtonEl: HTMLButtonElement | null = null;
+
   let listTogglePositioned = false;
+
+  let ollamaSettingsButtonEl: HTMLButtonElement | null = null;
+  let ollamaMenuEl: HTMLDivElement | null = null;
+  let showOllamaMenu = false;
+
+  // When a dropdown/menu is inside a scrollable container, it can be clipped by ancestor overflow
+  // (common in Obsidian panes). Portal the menu to <body> and position it with fixed coordinates.
+  let ollamaMenuTop = 0;
+  let ollamaMenuLeft = 0;
+  let ollamaMenuMaxHeight = 0;
+
+  function portalToBody(node: HTMLElement) {
+    // Obsidian runs in a DOM environment; move the node so it isn't clipped by pane overflow.
+    document.body.appendChild(node);
+
+    return {
+      // IMPORTANT: do not remove the node here. Svelte will detach it during teardown.
+      destroy() {},
+    };
+  }
+
+  function computeOllamaMenuPositionFromAnchor(
+    anchorEl: HTMLElement,
+    menuEl: HTMLElement
+  ): { top: number; left: number; maxHeight: number } {
+    const anchorRect = anchorEl.getBoundingClientRect();
+    const menuRect = menuEl.getBoundingClientRect();
+
+    const padding = 8;
+    const gap = 6;
+
+    const viewportW = window.innerWidth;
+    const viewportH = window.innerHeight;
+
+    const spaceDown = viewportH - padding - (anchorRect.bottom + gap);
+    const spaceUp = anchorRect.top - padding - gap;
+
+    // Prefer opening down unless there is clearly more room above.
+    const openUp = spaceDown < Math.min(220, menuRect.height) && spaceUp > spaceDown;
+
+    let maxHeight = Math.max(140, Math.floor(openUp ? spaceUp : spaceDown));
+
+    // Align menu right edge to the anchor right edge.
+    let left = anchorRect.right - menuRect.width;
+    left = Math.max(padding, Math.min(left, viewportW - menuRect.width - padding));
+
+    let top: number;
+    if (openUp) {
+      // Place the menu so its bottom hugs the anchor.
+      const desiredBottom = anchorRect.top - gap;
+      top = Math.max(padding, desiredBottom - Math.min(menuRect.height, maxHeight));
+      // Recompute maxHeight in case clamping changed available space.
+      maxHeight = Math.max(140, Math.floor(desiredBottom - padding));
+    } else {
+      top = anchorRect.bottom + gap;
+      maxHeight = Math.max(140, Math.floor(viewportH - padding - top));
+    }
+
+    return {
+      top: Math.round(top),
+      left: Math.round(left),
+      maxHeight,
+    };
+  }
+
+  function positionOllamaMenu(): void {
+    if (!showOllamaMenu || !ollamaSettingsButtonEl || !ollamaMenuEl) {
+      return;
+    }
+
+    const pos = computeOllamaMenuPositionFromAnchor(
+      ollamaSettingsButtonEl,
+      ollamaMenuEl
+    );
+    ollamaMenuTop = pos.top;
+    ollamaMenuLeft = pos.left;
+    ollamaMenuMaxHeight = pos.maxHeight;
+  }
+
+  // Floating tooltip (portaled to <body>) so it won't be clipped by the menu's scroll container.
+  let tooltipEl: HTMLDivElement | null = null;
+  let tooltipText = "";
+  let showTooltip = false;
+  let tooltipTop = 0;
+  let tooltipLeft = 0;
+  let tooltipAnchorEl: HTMLElement | null = null;
+
+  function hideTooltip(): void {
+    showTooltip = false;
+    tooltipAnchorEl = null;
+  }
+
+  function positionTooltip(): void {
+    if (!showTooltip || !tooltipAnchorEl || !tooltipEl) {
+      return;
+    }
+
+    const anchorRect = tooltipAnchorEl.getBoundingClientRect();
+    const tipRect = tooltipEl.getBoundingClientRect();
+
+    const padding = 8;
+    const gap = 6;
+    const viewportW = window.innerWidth;
+    const viewportH = window.innerHeight;
+
+    const spaceUp = anchorRect.top - padding - gap;
+    const spaceDown = viewportH - padding - (anchorRect.bottom + gap);
+    const openUp = spaceUp >= tipRect.height || spaceUp > spaceDown;
+
+    let top = openUp
+      ? anchorRect.top - gap - tipRect.height
+      : anchorRect.bottom + gap;
+
+    // Center horizontally to the icon.
+    let left = anchorRect.left + anchorRect.width / 2 - tipRect.width / 2;
+
+    // Clamp within viewport.
+    top = Math.max(padding, Math.min(top, viewportH - tipRect.height - padding));
+    left = Math.max(padding, Math.min(left, viewportW - tipRect.width - padding));
+
+    tooltipTop = Math.round(top);
+    tooltipLeft = Math.round(left);
+  }
+
+  async function showTooltipFor(el: HTMLElement): Promise<void> {
+    const text = el.getAttribute("data-tooltip") || el.getAttribute("aria-label") || "";
+    if (!text) {
+      hideTooltip();
+      return;
+    }
+
+    tooltipText = text;
+    tooltipAnchorEl = el;
+
+    // Seed a reasonable initial position to avoid flashing at (0,0) before we can measure.
+    const rect = el.getBoundingClientRect();
+    const padding = 8;
+    const gap = 6;
+    tooltipTop = Math.round(rect.bottom + gap);
+    tooltipLeft = Math.round(
+      Math.max(padding, Math.min(rect.left, window.innerWidth - padding))
+    );
+
+    showTooltip = true;
+
+    await svelteTick();
+    positionTooltip();
+  }
+
+  function onTipEnter(event: Event): void {
+    const el = event.currentTarget as HTMLElement | null;
+    if (!el) {
+      return;
+    }
+    void showTooltipFor(el);
+  }
+
+  function onTipLeave(): void {
+    hideTooltip();
+  }
+
+  const OLLAMA_PULL_MODEL = "gemma3:4b";
+
+  // Unique IDs for menu fields (avoid collisions if multiple Calendar views are open).
+  const ollamaIdPrefix = `calendar-ollama-${Math.random().toString(36).slice(2, 8)}`;
+  const ollamaUrlInputId = `${ollamaIdPrefix}-url`;
+  const ollamaModelInputId = `${ollamaIdPrefix}-model`;
+  const ollamaMaxCharsInputId = `${ollamaIdPrefix}-maxchars`;
+  const ollamaTimeoutInputId = `${ollamaIdPrefix}-timeout`;
+  const ollamaCacheInputId = `${ollamaIdPrefix}-cache`;
+
+  let pullingModel = false;
+
+  type OllamaStatusState = "idle" | "checking" | "ok" | "error";
+  let ollamaStatusState: OllamaStatusState = "idle";
+  let ollamaStatusLabel = "";
+  let ollamaStatusDetails = "";
+
+  function getCalendarPlugin(): any | null {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const app = (window as any).app;
+      return app?.plugins?.getPlugin?.("calendar") ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  async function writeOptions(partial: Partial<ISettings>): Promise<void> {
+    try {
+      const plugin = getCalendarPlugin();
+      if (plugin?.writeOptions) {
+        await plugin.writeOptions(() => partial);
+        return;
+      }
+
+      // Fallback: updates UI but won't persist.
+      settings.update((old) => ({ ...old, ...partial }));
+    } catch (err) {
+      console.error("[Calendar] Failed to write options", err);
+    }
+  }
+
+  async function clearGeneratedTitles(): Promise<void> {
+    try {
+      const plugin = getCalendarPlugin();
+      if (plugin?.clearGeneratedTitles) {
+        await plugin.clearGeneratedTitles();
+        new Notice("Cleared generated titles.");
+        return;
+      }
+
+      ollamaTitleCache.set({});
+      new Notice("Cleared generated titles.");
+    } catch (err) {
+      console.error("[Calendar] Failed to clear generated titles", err);
+      const msg = err instanceof Error ? err.message : String(err);
+      new Notice(`Failed to clear generated titles: ${msg}`);
+    }
+  }
+
+  async function refreshOllamaStatus(): Promise<void> {
+    const enabled = !!$settings.ollamaTitlesEnabled;
+    const baseUrl = $settings.ollamaBaseUrl ?? "http://127.0.0.1:11434";
+    const model = $settings.ollamaModel ?? "gemma3:4b";
+    const timeoutMs = $settings.ollamaRequestTimeoutMs ?? 15000;
+
+    if (!enabled) {
+      ollamaStatusState = "idle";
+      ollamaStatusLabel = "Off";
+      ollamaStatusDetails = "";
+      return;
+    }
+
+    ollamaStatusState = "checking";
+    ollamaStatusLabel = "Checking…";
+    ollamaStatusDetails = "";
+
+    try {
+      const client = createOllamaClient({ baseUrl, timeoutMs });
+      const version = await client.getVersion();
+      const tags = await client.listModels();
+
+      const versionStr = version?.version ? `v${version.version}` : "v?";
+      const installed = isModelInstalled(tags, model);
+
+      ollamaStatusState = "ok";
+      ollamaStatusLabel = `Reachable ${versionStr}`;
+      ollamaStatusDetails = installed
+        ? `Model ${model}: installed`
+        : `Model ${model}: not installed`;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      ollamaStatusState = "error";
+      ollamaStatusLabel = "Unreachable";
+      ollamaStatusDetails = msg;
+    }
+  }
+
+  async function onToggleOllamaEnabled(event: Event): Promise<void> {
+    const el = event.currentTarget as HTMLInputElement;
+    const enabled = !!el?.checked;
+    await writeOptions({ ollamaTitlesEnabled: enabled });
+
+    if (enabled) {
+      void refreshOllamaStatus();
+    } else {
+      ollamaStatusState = "idle";
+      ollamaStatusLabel = "Off";
+      ollamaStatusDetails = "";
+    }
+
+    // Menu height changes when toggling on/off; reposition to avoid clipping.
+    if (showOllamaMenu) {
+      await svelteTick();
+      positionOllamaMenu();
+      positionTooltip();
+    }
+  }
+
+  async function toggleOllamaMenu(event: MouseEvent): Promise<void> {
+    event.preventDefault();
+    event.stopPropagation();
+
+    showOllamaMenu = !showOllamaMenu;
+
+    if (showOllamaMenu) {
+      // Seed a reasonable initial position to avoid a flash at (0,0) before we can measure.
+      if (ollamaSettingsButtonEl) {
+        const rect = ollamaSettingsButtonEl.getBoundingClientRect();
+        const padding = 8;
+        const gap = 6;
+        const widthGuess = 310;
+
+        ollamaMenuTop = Math.round(rect.bottom + gap);
+        ollamaMenuLeft = Math.round(
+          Math.max(
+            padding,
+            Math.min(rect.right - widthGuess, window.innerWidth - widthGuess - padding)
+          )
+        );
+        ollamaMenuMaxHeight = Math.max(
+          140,
+          Math.floor(window.innerHeight - padding - ollamaMenuTop)
+        );
+      }
+
+      await svelteTick();
+      positionOllamaMenu();
+
+      if ($settings.ollamaTitlesEnabled) {
+        void refreshOllamaStatus();
+      }
+    }
+  }
+
+  function parseNumberOrUndef(input: string): number | undefined {
+    const trimmed = (input ?? "").trim();
+    if (!trimmed) {
+      return undefined;
+    }
+
+    const num = Number(trimmed);
+    return Number.isFinite(num) ? num : undefined;
+  }
+
+  async function onChangeOllamaBaseUrl(event: Event): Promise<void> {
+    const el = event.currentTarget as HTMLInputElement;
+    const next = normalizeOllamaBaseUrl(el?.value ?? "");
+    await writeOptions({ ollamaBaseUrl: next });
+
+    if (showOllamaMenu && $settings.ollamaTitlesEnabled) {
+      void refreshOllamaStatus();
+    }
+  }
+
+  async function onChangeOllamaModel(event: Event): Promise<void> {
+    const el = event.currentTarget as HTMLInputElement;
+    const next = (el?.value ?? "").trim();
+    await writeOptions({ ollamaModel: next });
+
+    if (showOllamaMenu && $settings.ollamaTitlesEnabled) {
+      void refreshOllamaStatus();
+    }
+  }
+
+  async function onChangeOllamaMaxChars(event: Event): Promise<void> {
+    const el = event.currentTarget as HTMLInputElement;
+    await writeOptions({
+      ollamaMaxChars: parseNumberOrUndef(el?.value ?? ""),
+    });
+  }
+
+  async function onChangeOllamaTimeout(event: Event): Promise<void> {
+    const el = event.currentTarget as HTMLInputElement;
+    await writeOptions({
+      ollamaRequestTimeoutMs: parseNumberOrUndef(el?.value ?? ""),
+    });
+
+    if (showOllamaMenu && $settings.ollamaTitlesEnabled) {
+      void refreshOllamaStatus();
+    }
+  }
+
+  async function onChangeOllamaCacheSize(event: Event): Promise<void> {
+    const el = event.currentTarget as HTMLInputElement;
+    await writeOptions({
+      ollamaTitleCacheMaxEntries: parseNumberOrUndef(el?.value ?? ""),
+    });
+  }
+
+  async function onClickPullModel(event: MouseEvent): Promise<void> {
+    event.preventDefault();
+    event.stopPropagation();
+
+    if (pullingModel) {
+      return;
+    }
+
+    pullingModel = true;
+    try {
+      const baseUrl = $settings.ollamaBaseUrl ?? "http://127.0.0.1:11434";
+      const timeoutMs = $settings.ollamaRequestTimeoutMs ?? 15000;
+      const client = createOllamaClient({ baseUrl, timeoutMs });
+
+      new Notice(`Pulling ${OLLAMA_PULL_MODEL}…`);
+      const res = await client.pullModel(OLLAMA_PULL_MODEL);
+      if (res?.error) {
+        throw new Error(res.error);
+      }
+      new Notice(`Pulled ${OLLAMA_PULL_MODEL}.`);
+
+      void refreshOllamaStatus();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error("[Calendar] Failed to pull model", err);
+      new Notice(`Failed to pull ${OLLAMA_PULL_MODEL}: ${msg}`);
+    } finally {
+      pullingModel = false;
+    }
+  }
 
   // Responsive scaling: when the view gets narrow, scale down the calendar (and header)
   // so we can still show all 7 day columns without horizontal scroll.
@@ -601,20 +1011,6 @@
     return (notes && notes.length > 0) || (files && files.length > 0);
   }
 
-  /* removed: getParentFolderName, no longer used */
-  function getParentFolderName(file: TFile): string {
-    try {
-      const p = file.path ?? "";
-      const idx = p.lastIndexOf("/");
-      if (idx <= 0) return "";
-      const dir = p.slice(0, idx);
-      const didx = dir.lastIndexOf("/");
-      return didx >= 0 ? dir.slice(didx + 1) : dir;
-    } catch {
-      return "";
-    }
-  }
-
   function getFileExtension(file: TFile): string {
     const ext = (file.extension ?? "").toLowerCase();
     return ext;
@@ -696,7 +1092,7 @@
   }, 1000 * 60);
 
   function updateListTogglePosition(): void {
-    if (!calendarBaseWrapperEl || !listToggleButtonEl) {
+    if (!calendarBaseWrapperEl || !listControlsEl) {
       return;
     }
 
@@ -712,10 +1108,10 @@
       return;
     }
 
-    // Put the toggle into the header DOM flow so layout stays robust at tiny widths.
-    // This avoids overlaps (title vs toggle vs arrows) and lets CSS handle truncation/scroll.
-    if (listToggleButtonEl.parentElement !== navEl) {
-      navEl.insertBefore(listToggleButtonEl, rightNavEl);
+    // Put the list controls into the header DOM flow so layout stays robust at tiny widths.
+    // This avoids overlaps (title vs buttons vs arrows) and lets CSS handle truncation/scroll.
+    if (listControlsEl.parentElement !== navEl) {
+      navEl.insertBefore(listControlsEl, rightNavEl);
     }
 
     listTogglePositioned = true;
@@ -727,6 +1123,10 @@
       window.requestAnimationFrame(() => {
         updateCalendarScale();
         updateListTogglePosition();
+
+        // If the menu is open, keep it aligned to the anchor on resizes/layout changes.
+        positionOllamaMenu();
+        positionTooltip();
       });
     };
 
@@ -782,6 +1182,50 @@
     };
   });
 
+  $: if (!showList) {
+    showOllamaMenu = false;
+  }
+
+  $: if (!showOllamaMenu) {
+    hideTooltip();
+  }
+
+  onMount(() => {
+    const onMouseDownCapture = (event: MouseEvent) => {
+      if (!showOllamaMenu) {
+        return;
+      }
+
+      const target = event.target as Node | null;
+      if (!target) {
+        return;
+      }
+
+      const isInsideMenu = !!ollamaMenuEl?.contains(target);
+      const isOnButton = !!ollamaSettingsButtonEl?.contains(target);
+      if (isInsideMenu || isOnButton) {
+        return;
+      }
+
+      showOllamaMenu = false;
+    };
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && showOllamaMenu) {
+        showOllamaMenu = false;
+      }
+    };
+
+    // Capture to close the menu even if a click handler stops propagation.
+    window.addEventListener("mousedown", onMouseDownCapture, true);
+    window.addEventListener("keydown", onKeyDown);
+
+    return () => {
+      window.removeEventListener("mousedown", onMouseDownCapture, true);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  });
+
   onDestroy(() => {
     clearInterval(heartbeat);
     if (listComputeTimer !== null) {
@@ -811,29 +1255,301 @@
         showWeekNums={$settings.showWeeklyNote}
       />
 
-      <button
-        class="calendar-list-toggle"
-        class:is-active={showList}
+      <div
+        class="calendar-list-controls"
         class:is-positioned={listTogglePositioned}
-        type="button"
-        aria-label={showList ? "Hide list" : "Show list"}
-        aria-pressed={showList}
-        bind:this={listToggleButtonEl}
-        on:click={toggleList}
+        bind:this={listControlsEl}
       >
-        <svg
-          focusable="false"
-          role="img"
-          xmlns="http://www.w3.org/2000/svg"
-          viewBox="0 0 24 24"
-          aria-hidden="true"
+        <button
+          class="calendar-list-toggle"
+          class:is-active={showList}
+          type="button"
+          aria-label={showList ? "Hide list" : "Show list"}
+          aria-pressed={showList}
+          bind:this={listToggleButtonEl}
+          on:click={toggleList}
         >
-          <path
-            fill="currentColor"
-            d="M4 6h16v2H4V6zm0 5h16v2H4v-2zm0 5h16v2H4v-2z"
-          />
-        </svg>
-      </button>
+          <svg
+            focusable="false"
+            role="img"
+            xmlns="http://www.w3.org/2000/svg"
+            viewBox="0 0 24 24"
+            aria-hidden="true"
+          >
+            <path
+              fill="currentColor"
+              d="M4 6h16v2H4V6zm0 5h16v2H4v-2zm0 5h16v2H4v-2z"
+            />
+          </svg>
+        </button>
+
+        {#if showList}
+          <button
+            class="calendar-ollama-settings-toggle"
+            class:is-active={showOllamaMenu}
+            type="button"
+            aria-label="Ollama settings"
+            aria-haspopup="menu"
+            aria-expanded={showOllamaMenu}
+            bind:this={ollamaSettingsButtonEl}
+            on:click={toggleOllamaMenu}
+          >
+            <svg
+              focusable="false"
+              role="img"
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 24 24"
+              aria-hidden="true"
+            >
+              <path
+                fill="currentColor"
+                d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.11-.2-.36-.28-.57-.2l-2.39.96c-.49-.38-1.04-.69-1.62-.92L14.4 2.5a.488.488 0 0 0-.48-.4h-3.84c-.24 0-.44.17-.48.4l-.36 2.54c-.58.23-1.12.54-1.62.92l-2.39-.96c-.21-.08-.46 0-.57.2L2.74 8.02c-.11.2-.06.47.12.61l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.11.2.36.28.57.2l2.39-.96c.49.38 1.04.69 1.62.92l.36 2.54c.04.23.24.4.48.4h3.84c.24 0 .44-.17.48-.4l.36-2.54c.58-.23 1.12-.54 1.62-.92l2.39.96c.21.08.46 0 .57-.2l1.92-3.32c.11-.2.06-.47-.12-.61l-2.03-1.58ZM12 15.5A3.5 3.5 0 1 1 12 8a3.5 3.5 0 0 1 0 7.5Z"
+              />
+            </svg>
+
+            {#if $settings.ollamaTitlesEnabled}
+              <span
+                class="calendar-ollama-status-dot"
+                class:is-ok={ollamaStatusState === "ok"}
+                class:is-error={ollamaStatusState === "error"}
+                class:is-checking={ollamaStatusState === "checking"}
+                aria-hidden="true"
+              ></span>
+            {/if}
+          </button>
+
+          {#if showOllamaMenu}
+            <div
+              class="calendar-ollama-menu"
+              role="menu"
+              bind:this={ollamaMenuEl}
+              use:portalToBody
+              style={`top: ${ollamaMenuTop}px; left: ${ollamaMenuLeft}px; max-height: ${ollamaMenuMaxHeight}px;`}
+              on:scroll={() => hideTooltip()}
+              transition:slide={{ duration: 120 }}
+            >
+              <div class="calendar-ollama-menu-row calendar-ollama-menu-row--top">
+                <div class="calendar-ollama-menu-title">
+                  <span>Ollama</span>
+                  <span
+                    class="calendar-tip"
+                    data-tooltip="AI titles in list view (no renames)"
+                    tabindex="0"
+                    aria-label="AI titles in list view (no renames)"
+                    on:mouseenter={onTipEnter}
+                    on:mouseleave={onTipLeave}
+                    on:focus={onTipEnter}
+                    on:blur={onTipLeave}
+                  >
+                    i
+                  </span>
+                </div>
+
+                <label class="calendar-ollama-toggle" title="Enable / disable">
+                  <input
+                    type="checkbox"
+                    checked={$settings.ollamaTitlesEnabled}
+                    on:change={onToggleOllamaEnabled}
+                  />
+                  <span class="calendar-ollama-toggle-track" aria-hidden="true"></span>
+                </label>
+              </div>
+
+              {#if $settings.ollamaTitlesEnabled}
+                <div class="calendar-ollama-menu-section">
+                  <div class="calendar-ollama-field">
+                    <label for={ollamaUrlInputId}>
+                      URL
+                      <span
+                        class="calendar-tip"
+                        data-tooltip="Usually http://127.0.0.1:11434"
+                        tabindex="0"
+                        aria-label="Usually http://127.0.0.1:11434"
+                        on:mouseenter={onTipEnter}
+                        on:mouseleave={onTipLeave}
+                        on:focus={onTipEnter}
+                        on:blur={onTipLeave}
+                      >
+                        ?
+                      </span>
+                    </label>
+                    <input
+                      id={ollamaUrlInputId}
+                      type="text"
+                      value={$settings.ollamaBaseUrl}
+                      placeholder="http://127.0.0.1:11434"
+                      on:change={onChangeOllamaBaseUrl}
+                    />
+                  </div>
+
+                  <div class="calendar-ollama-field">
+                    <label for={ollamaModelInputId}>
+                      Model
+                      <span
+                        class="calendar-tip"
+                        data-tooltip="e.g. gemma3:4b"
+                        tabindex="0"
+                        aria-label="e.g. gemma3:4b"
+                        on:mouseenter={onTipEnter}
+                        on:mouseleave={onTipLeave}
+                        on:focus={onTipEnter}
+                        on:blur={onTipLeave}
+                      >
+                        ?
+                      </span>
+                    </label>
+                    <input
+                      id={ollamaModelInputId}
+                      type="text"
+                      value={$settings.ollamaModel}
+                      placeholder="gemma3:4b"
+                      on:change={onChangeOllamaModel}
+                    />
+                  </div>
+
+                  <div class="calendar-ollama-field">
+                    <label for={ollamaMaxCharsInputId}>
+                      Max chars
+                      <span
+                        class="calendar-tip"
+                        data-tooltip="Truncates note text"
+                        tabindex="0"
+                        aria-label="Truncates note text"
+                        on:mouseenter={onTipEnter}
+                        on:mouseleave={onTipLeave}
+                        on:focus={onTipEnter}
+                        on:blur={onTipLeave}
+                      >
+                        ?
+                      </span>
+                    </label>
+                    <input
+                      id={ollamaMaxCharsInputId}
+                      type="number"
+                      value={String($settings.ollamaMaxChars ?? "")}
+                      placeholder="8000"
+                      on:change={onChangeOllamaMaxChars}
+                    />
+                  </div>
+
+                  <div class="calendar-ollama-field">
+                    <label for={ollamaTimeoutInputId}>
+                      Timeout
+                      <span
+                        class="calendar-tip"
+                        data-tooltip="ms (status + generate)"
+                        tabindex="0"
+                        aria-label="ms (status + generate)"
+                        on:mouseenter={onTipEnter}
+                        on:mouseleave={onTipLeave}
+                        on:focus={onTipEnter}
+                        on:blur={onTipLeave}
+                      >
+                        ?
+                      </span>
+                    </label>
+                    <input
+                      id={ollamaTimeoutInputId}
+                      type="number"
+                      value={String($settings.ollamaRequestTimeoutMs ?? "")}
+                      placeholder="15000"
+                      on:change={onChangeOllamaTimeout}
+                    />
+                  </div>
+
+                  <div class="calendar-ollama-field">
+                    <label for={ollamaCacheInputId}>
+                      Cache
+                      <span
+                        class="calendar-tip"
+                        data-tooltip="Max saved titles"
+                        tabindex="0"
+                        aria-label="Max saved titles"
+                        on:mouseenter={onTipEnter}
+                        on:mouseleave={onTipLeave}
+                        on:focus={onTipEnter}
+                        on:blur={onTipLeave}
+                      >
+                        ?
+                      </span>
+                    </label>
+                    <input
+                      id={ollamaCacheInputId}
+                      type="number"
+                      value={String($settings.ollamaTitleCacheMaxEntries ?? "")}
+                      placeholder="1000"
+                      on:change={onChangeOllamaCacheSize}
+                    />
+                  </div>
+                </div>
+
+                <div class="calendar-ollama-menu-actions">
+                  <button
+                    class="calendar-ollama-action"
+                    type="button"
+                    disabled={ollamaStatusState === "checking"}
+                    title="Check status"
+                    on:click={() => void refreshOllamaStatus()}
+                  >
+                    Check
+                  </button>
+
+                  <button
+                    class="calendar-ollama-action"
+                    type="button"
+                    disabled={pullingModel}
+                    title={`Pull ${OLLAMA_PULL_MODEL}`}
+                    on:click={onClickPullModel}
+                  >
+                    {pullingModel ? "Pulling…" : "Pull"}
+                  </button>
+
+                  <button
+                    class="calendar-ollama-action calendar-ollama-action--danger"
+                    type="button"
+                    title="Clear cached titles"
+                    on:click={() => void clearGeneratedTitles()}
+                  >
+                    Clear
+                  </button>
+                </div>
+
+                <div
+                  class="calendar-ollama-menu-status"
+                  class:is-error={ollamaStatusState === "error"}
+                  title={ollamaStatusDetails || undefined}
+                >
+                  <span
+                    class="calendar-ollama-status-dot"
+                    class:is-ok={ollamaStatusState === "ok"}
+                    class:is-error={ollamaStatusState === "error"}
+                    class:is-checking={ollamaStatusState === "checking"}
+                    aria-hidden="true"
+                  ></span>
+                  <div class="calendar-ollama-menu-status-text">
+                    <div class="calendar-ollama-menu-status-label">{ollamaStatusLabel}</div>
+                    {#if ollamaStatusDetails}
+                      <div class="calendar-ollama-menu-status-details">{ollamaStatusDetails}</div>
+                    {/if}
+                  </div>
+                </div>
+              {/if}
+            </div>
+
+            {#if showTooltip}
+              <div
+                class="calendar-tooltip"
+                role="tooltip"
+                bind:this={tooltipEl}
+                use:portalToBody
+                style={`top: ${tooltipTop}px; left: ${tooltipLeft}px;`}
+              >
+                {tooltipText}
+              </div>
+            {/if}
+          {/if}
+        {/if}
+      </div>
     </div>
   </div>
 
