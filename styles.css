@@ -253,12 +253,14 @@
 
   border-top: 1px solid var(--background-modifier-border);
   padding-top: 8px;
+  padding-bottom: 8px;
 }
 
 .calendar-ollama-menu .calendar-ollama-field {
   display: grid;
-  grid-template-columns: 88px 1fr;
-  gap: 8px;
+  /* Slightly wider label column so labels like "Created items" don't wrap */
+  grid-template-columns: 110px 1fr;
+  /* gap: 8px; */
   align-items: center;
 }
 
@@ -326,7 +328,7 @@
   gap: 6px;
   justify-content: flex-end;
 
-  padding-top: 8px;
+  /* padding-top: 8px; */
 }
 
 .calendar-ollama-menu .calendar-ollama-action {
