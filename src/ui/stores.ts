@@ -2,22 +2,30 @@ import type { TFile } from "obsidian";
 import {
   getAllDailyNotes,
   getAllWeeklyNotes,
+  getDateFromFile,
+  getDateUID,
 } from "obsidian-daily-notes-interface";
-import { get, writable } from "svelte/store";
+import { writable } from "svelte/store";
 
 import type { OllamaTitleCache } from "src/ollama/cache";
 import { defaultSettings, ISettings } from "src/settings";
 
-import { getDateUIDFromFile } from "./utils";
-
 function createDailyNotesStore() {
   let hasError = false;
+  let initialized = false;
+  let pathSet = new Set<string>();
+
   const store = writable<Record<string, TFile>>(null);
   return {
     reindex: () => {
       try {
         const dailyNotes = getAllDailyNotes();
         store.set(dailyNotes);
+        pathSet = new Set(
+          Object.values(dailyNotes)
+            .filter(Boolean)
+            .map((f) => f.path)
+        );
         hasError = false;
       } catch (err) {
         if (!hasError) {
@@ -25,21 +33,36 @@ function createDailyNotesStore() {
           console.log("[Calendar] Failed to find daily notes folder", err);
         }
         store.set({});
+        pathSet = new Set();
         hasError = true;
+      } finally {
+        initialized = true;
       }
     },
+    hasPath: (path: string | null | undefined): boolean => {
+      return !!path && pathSet.has(path);
+    },
+    isInitialized: (): boolean => initialized,
     ...store,
   };
 }
 
 function createWeeklyNotesStore() {
   let hasError = false;
+  let initialized = false;
+  let pathSet = new Set<string>();
+
   const store = writable<Record<string, TFile>>(null);
   return {
     reindex: () => {
       try {
         const weeklyNotes = getAllWeeklyNotes();
         store.set(weeklyNotes);
+        pathSet = new Set(
+          Object.values(weeklyNotes)
+            .filter(Boolean)
+            .map((f) => f.path)
+        );
         hasError = false;
       } catch (err) {
         if (!hasError) {
@@ -47,9 +70,16 @@ function createWeeklyNotesStore() {
           console.log("[Calendar] Failed to find weekly notes folder", err);
         }
         store.set({});
+        pathSet = new Set();
         hasError = true;
+      } finally {
+        initialized = true;
       }
     },
+    hasPath: (path: string | null | undefined): boolean => {
+      return !!path && pathSet.has(path);
+    },
+    isInitialized: (): boolean => initialized,
     ...store,
   };
 }
@@ -64,9 +94,46 @@ function createSelectedFileStore() {
   const store = writable<string>(null);
 
   return {
-    setFile: (file: TFile) => {
-      const id = getDateUIDFromFile(file, get(dailyNotes), get(weeklyNotes));
-      store.set(id);
+    setFile: (file: TFile | null) => {
+      if (!file) {
+        store.set(null);
+        return;
+      }
+
+      const path = file.path;
+      const strictMode = dailyNotes.isInitialized() || weeklyNotes.isInitialized();
+
+      if (strictMode) {
+        if (dailyNotes.hasPath(path)) {
+          const date = getDateFromFile(file, "day");
+          store.set(date ? getDateUID(date, "day") : null);
+          return;
+        }
+
+        if (weeklyNotes.hasPath(path)) {
+          const date = getDateFromFile(file, "week");
+          store.set(date ? getDateUID(date, "week") : null);
+          return;
+        }
+
+        store.set(null);
+        return;
+      }
+
+      // Before indexes are available, fall back to best-effort parsing.
+      let date = getDateFromFile(file, "day");
+      if (date) {
+        store.set(getDateUID(date, "day"));
+        return;
+      }
+
+      date = getDateFromFile(file, "week");
+      if (date) {
+        store.set(getDateUID(date, "week"));
+        return;
+      }
+
+      store.set(null);
     },
     ...store,
   };

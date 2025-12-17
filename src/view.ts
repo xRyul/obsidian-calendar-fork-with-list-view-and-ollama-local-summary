@@ -1,4 +1,5 @@
 import type { Moment } from "moment";
+import type { ICalendarSource } from "obsidian-calendar-ui";
 import {
   getDailyNote,
   getDailyNoteSettings,
@@ -28,9 +29,154 @@ import {
   wordCountSource,
 } from "./ui/sources";
 
+function isPerfDebugEnabled(): boolean {
+  try {
+    return window.localStorage?.getItem("calendar-debug-perf") === "1";
+  } catch {
+    return false;
+  }
+}
+
+function perfNow(): number {
+  return typeof performance !== "undefined" && typeof performance.now === "function"
+    ? performance.now()
+    : Date.now();
+}
+
+type MetadataPerfState = {
+  inFlight: number;
+  burstId: number;
+  burstStart: number;
+  calls: number;
+  dailyCalls: number;
+  weeklyCalls: number;
+  perSourceMs: Record<string, number>;
+  perSourceCalls: Record<string, number>;
+};
+
+function instrumentSourcesForPerf(sources: ICalendarSource[]): ICalendarSource[] {
+  if (!isPerfDebugEnabled()) {
+    return sources;
+  }
+
+  // Keep perf state scoped to this particular Calendar view instance.
+  const perf: MetadataPerfState = {
+    inFlight: 0,
+    burstId: 0,
+    burstStart: 0,
+    calls: 0,
+    dailyCalls: 0,
+    weeklyCalls: 0,
+    perSourceMs: {},
+    perSourceCalls: {},
+  };
+
+  const knownNames = new Map<ICalendarSource, string>([
+    [customTagsSource, "tags"],
+    [streakSource, "streak"],
+    [wordCountSource, "wordCount"],
+    [tasksSource, "tasks"],
+  ]);
+
+  const startOp = (sourceName: string, kind: "daily" | "weekly"): number => {
+    const now = perfNow();
+
+    if (perf.inFlight === 0) {
+      perf.burstId += 1;
+      perf.burstStart = now;
+      perf.calls = 0;
+      perf.dailyCalls = 0;
+      perf.weeklyCalls = 0;
+      perf.perSourceMs = {};
+      perf.perSourceCalls = {};
+    }
+
+    perf.inFlight += 1;
+    perf.calls += 1;
+    if (kind === "daily") {
+      perf.dailyCalls += 1;
+    } else {
+      perf.weeklyCalls += 1;
+    }
+
+    perf.perSourceCalls[sourceName] = (perf.perSourceCalls[sourceName] ?? 0) + 1;
+    return now;
+  };
+
+  const endOp = (sourceName: string, startedAt: number): void => {
+    const now = perfNow();
+    perf.perSourceMs[sourceName] = (perf.perSourceMs[sourceName] ?? 0) + (now - startedAt);
+
+    perf.inFlight -= 1;
+    if (perf.inFlight !== 0) {
+      return;
+    }
+
+    const wall = now - perf.burstStart;
+    const top = Object.entries(perf.perSourceMs)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 6)
+      .map(([name, ms]) => {
+        const calls = perf.perSourceCalls[name] ?? 0;
+        return `${name}=${ms.toFixed(1)}ms(${calls})`;
+      })
+      .join(", ");
+
+    console.debug(
+      `[Calendar][perf] metadata burst #${perf.burstId}: wall=${wall.toFixed(
+        1
+      )}ms calls=${perf.calls} (daily=${perf.dailyCalls}, weekly=${perf.weeklyCalls}) top: ${top}`
+    );
+  };
+
+  return sources.map((source, i) => {
+    const maybeNamed = source as unknown as { name?: unknown };
+    const nameFromProp =
+      typeof maybeNamed?.name === "string" && maybeNamed.name.trim()
+        ? maybeNamed.name.trim()
+        : null;
+
+    const name = knownNames.get(source) ?? nameFromProp ?? `source#${i + 1}`;
+
+    const wrap = <T>(
+      kind: "daily" | "weekly",
+      fn: ((date: Moment) => Promise<T>) | undefined
+    ): ((date: Moment) => Promise<T>) | undefined => {
+      if (typeof fn !== "function") {
+        return fn;
+      }
+
+      return async (date: Moment) => {
+        const startedAt = startOp(name, kind);
+        try {
+          // Preserve `this` just in case a source relies on it.
+          return await (fn as (this: unknown, date: Moment) => Promise<T>).call(
+            source,
+            date
+          );
+        } finally {
+          endOp(name, startedAt);
+        }
+      };
+    };
+
+    return {
+      ...source,
+      getDailyMetadata: wrap("daily", source.getDailyMetadata),
+      getWeeklyMetadata: wrap("weekly", source.getWeeklyMetadata),
+    };
+  });
+}
+
 export default class CalendarView extends ItemView {
   private calendar: CalendarComponent;
   private settings: ISettings;
+
+  // Coalesce refresh bursts from vault events (save storms, batch ops, etc.)
+  private calendarTickTimer: number | null = null;
+  private listRefreshTimer: number | null = null;
+
+  private static readonly CALENDAR_REFRESH_DEBOUNCE_MS = 200;
 
   constructor(leaf: WorkspaceLeaf) {
     super(leaf);
@@ -66,10 +212,8 @@ export default class CalendarView extends ItemView {
     settings.subscribe((val) => {
       this.settings = val;
 
-      // Refresh the calendar if settings change
-      if (this.calendar) {
-        this.calendar.tick();
-      }
+      // Refresh the calendar if settings change.
+      this.scheduleCalendarTick();
     });
   }
 
@@ -86,6 +230,15 @@ export default class CalendarView extends ItemView {
   }
 
   onClose(): Promise<void> {
+    if (this.calendarTickTimer !== null) {
+      window.clearTimeout(this.calendarTickTimer);
+      this.calendarTickTimer = null;
+    }
+    if (this.listRefreshTimer !== null) {
+      window.clearTimeout(this.listRefreshTimer);
+      this.listRefreshTimer = null;
+    }
+
     if (this.calendar) {
       this.calendar.$destroy();
     }
@@ -95,13 +248,15 @@ export default class CalendarView extends ItemView {
   async onOpen(): Promise<void> {
     // Integration point: external plugins can listen for `calendar:open`
     // to feed in additional sources.
-    const sources = [
+    const sources: ICalendarSource[] = [
       customTagsSource,
       streakSource,
       wordCountSource,
       tasksSource,
     ];
     this.app.workspace.trigger(TRIGGER_ON_OPEN, sources);
+
+    const instrumentedSources = instrumentSourcesForPerf(sources);
 
     this.calendar = new Calendar({
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -113,7 +268,7 @@ export default class CalendarView extends ItemView {
         onHoverWeek: this.onHoverWeek,
         onContextMenuDay: this.onContextMenuDay,
         onContextMenuWeek: this.onContextMenuWeek,
-        sources,
+        sources: instrumentedSources,
       },
     });
   }
@@ -184,16 +339,19 @@ export default class CalendarView extends ItemView {
     dailyNotes.reindex();
     weeklyNotes.reindex();
     this.updateActiveFile();
+    this.scheduleCalendarTick();
   }
 
   private async onFileDeleted(file: TFile): Promise<void> {
     if (getDateFromFile(file, "day")) {
       dailyNotes.reindex();
       this.updateActiveFile();
+      this.scheduleCalendarTick();
     }
     if (getDateFromFile(file, "week")) {
       weeklyNotes.reindex();
       this.updateActiveFile();
+      this.scheduleCalendarTick();
     }
   }
 
@@ -201,17 +359,14 @@ export default class CalendarView extends ItemView {
     const dailyDate = getDateFromFile(file, "day");
     const date = dailyDate || getDateFromFile(file, "week");
 
-    if (date && this.calendar) {
-      this.calendar.tick();
+    if (date) {
+      this.scheduleCalendarTick();
     }
 
     // List view filtering depends on file contents (word count), so refresh it
     // when a daily note changes.
-    if (dailyDate && this.calendar) {
-      const refreshList = this.calendar.requestListRefresh;
-      if (typeof refreshList === "function") {
-        refreshList();
-      }
+    if (dailyDate) {
+      this.scheduleListRefresh();
     }
   }
 
@@ -219,11 +374,11 @@ export default class CalendarView extends ItemView {
     if (this.app.workspace.layoutReady && this.calendar) {
       if (getDateFromFile(file, "day")) {
         dailyNotes.reindex();
-        this.calendar.tick();
+        this.scheduleCalendarTick();
       }
       if (getDateFromFile(file, "week")) {
         weeklyNotes.reindex();
-        this.calendar.tick();
+        this.scheduleCalendarTick();
       }
     }
   }
@@ -242,10 +397,44 @@ export default class CalendarView extends ItemView {
       file = view.file;
     }
     activeFile.setFile(file);
+  }
 
-    if (this.calendar) {
-      this.calendar.tick();
+  private scheduleCalendarTick(): void {
+    if (!this.calendar) {
+      return;
     }
+
+    if (this.calendarTickTimer !== null) {
+      window.clearTimeout(this.calendarTickTimer);
+    }
+
+    this.calendarTickTimer = window.setTimeout(() => {
+      this.calendarTickTimer = null;
+      this.calendar?.tick();
+    }, CalendarView.CALENDAR_REFRESH_DEBOUNCE_MS);
+  }
+
+  private scheduleListRefresh(): void {
+    if (!this.calendar) {
+      return;
+    }
+
+    const refreshList = this.calendar.requestListRefresh;
+    if (typeof refreshList !== "function") {
+      return;
+    }
+
+    if (this.listRefreshTimer !== null) {
+      window.clearTimeout(this.listRefreshTimer);
+    }
+
+    this.listRefreshTimer = window.setTimeout(() => {
+      this.listRefreshTimer = null;
+      const fn = this.calendar?.requestListRefresh;
+      if (typeof fn === "function") {
+        fn();
+      }
+    }, CalendarView.CALENDAR_REFRESH_DEBOUNCE_MS);
   }
 
   public revealActiveNote(): void {

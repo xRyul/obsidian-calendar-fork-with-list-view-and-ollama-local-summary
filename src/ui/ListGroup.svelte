@@ -26,17 +26,19 @@
     {node.label}
   </summary>
 
-  <div class="calendar-list-days">
-    {#if node.groups?.length}
-      {#each node.groups as child (child.id)}
-        <svelte:self node={child} {openState} {onToggle}>
-          <svelte:fragment let:items>
-            <slot {items} />
-          </svelte:fragment>
-        </svelte:self>
-      {/each}
-    {:else}
-      <slot items={node.items} />
-    {/if}
-  </div>
+  {#if openState[node.id]}
+    <div class="calendar-list-days">
+      {#if node.groups?.length}
+        {#each node.groups as child (child.id)}
+          <svelte:self node={child} {openState} {onToggle}>
+            <svelte:fragment let:items>
+              <slot {items} />
+            </svelte:fragment>
+          </svelte:self>
+        {/each}
+      {:else}
+        <slot items={node.items} />
+      {/if}
+    </div>
+  {/if}
 </details>

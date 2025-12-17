@@ -9,8 +9,8 @@
   import type { ICalendarSource } from "obsidian-calendar-ui";
   import { onDestroy, onMount, tick as svelteTick } from "svelte";
   import { slide } from "svelte/transition";
-  import { Notice } from "obsidian";
-  import type { EventRef, TFile } from "obsidian";
+  import { Notice, TFile } from "obsidian";
+  import type { EventRef } from "obsidian";
   import { getDateFromFile, getDateUID } from "obsidian-daily-notes-interface";
 
   import ListGroup from "./ListGroup.svelte";
@@ -55,7 +55,7 @@
     settings,
     weeklyNotes,
   } from "./stores";
-  import { getWordCount } from "./utils";
+  import { getWordCount as getWordCountFromFile } from "./noteMetrics";
 
   let today: Moment;
 
@@ -564,13 +564,18 @@
   let createdOnDayIndexLoading = false;
   let createdOnDayIndexError: string | null = null;
 
-  let createdOnDayIndexNonce = 0;
-  let createdOnDayIndexTimer: number | null = null;
-  const CREATED_ON_DAY_RECOMPUTE_DEBOUNCE_MS = 1200;
+  let createdOnDayIndexBuildNonce = 0;
+  let createdOnDayIndexBuiltOnce = false;
+
+  type CreatedOnDayIndexOp =
+    | { type: "create"; file: TFile }
+    | { type: "delete"; path: string; ctime?: number }
+    | { type: "rename"; file: TFile; oldPath: string; ctime?: number };
+
+  let createdOnDayIndexPendingOps: CreatedOnDayIndexOp[] = [];
 
   let prevListViewIncludeCreatedDays: boolean | null = null;
 
-  const wordCountCache = new Map<string, { mtime: number; wordCount: number }>();
   let titleInFlight: Record<string, boolean> = {};
 
   let listComputeNonce = 0;
@@ -585,7 +590,7 @@
       showListJustOpened = true;
       void computeList();
       if ($settings.listViewIncludeCreatedDays) {
-        void rebuildCreatedOnDayIndex();
+        void ensureCreatedOnDayIndexBuilt();
       }
     }
   }
@@ -627,18 +632,270 @@
     return true;
   }
 
+  function isPerfDebugEnabled(): boolean {
+    try {
+      return window.localStorage?.getItem("calendar-debug-perf") === "1";
+    } catch {
+      return false;
+    }
+  }
+
+  function perfNow(): number {
+    return typeof performance !== "undefined" && typeof performance.now === "function"
+      ? performance.now()
+      : Date.now();
+  }
+
+  function pad2(num: number): string {
+    return num < 10 ? `0${num}` : String(num);
+  }
+
+  function formatLocalDateYYYYMMDD(epochMs: number): string {
+    const d = new Date(epochMs);
+    return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+  }
+
+  function upsertSortedByPath(arr: TFile[], file: TFile): TFile[] {
+    const path = file.path;
+    const without = (arr ?? []).filter((f) => f?.path !== path);
+
+    // Insert into already-sorted list.
+    let lo = 0;
+    let hi = without.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (without[mid].path.localeCompare(path) < 0) {
+        lo = mid + 1;
+      } else {
+        hi = mid;
+      }
+    }
+
+    without.splice(lo, 0, file);
+    return without;
+  }
+
+  function removeByPath(arr: TFile[], path: string): TFile[] {
+    const idx = (arr ?? []).findIndex((f) => f?.path === path);
+    if (idx === -1) {
+      return arr;
+    }
+
+    const next = arr.slice();
+    next.splice(idx, 1);
+    return next;
+  }
+
+  function addFileToCreatedOnDayIndex(
+    index: Record<string, CreatedOnDayBucket>,
+    file: TFile
+  ): Record<string, CreatedOnDayBucket> {
+    if (!shouldIndexFile(file)) {
+      return index;
+    }
+
+    const ctime = file.stat?.ctime;
+    if (!ctime) {
+      return index;
+    }
+
+    const dateStr = formatLocalDateYYYYMMDD(ctime);
+    const prev = index[dateStr] ?? { notes: [], files: [] };
+
+    const nextBucket: CreatedOnDayBucket = {
+      notes: [...(prev.notes ?? [])],
+      files: [...(prev.files ?? [])],
+    };
+
+    if (isNoteLikeFile(file)) {
+      nextBucket.notes = upsertSortedByPath(nextBucket.notes, file);
+      nextBucket.files = nextBucket.files.filter((f) => f?.path !== file.path);
+    } else {
+      nextBucket.files = upsertSortedByPath(nextBucket.files, file);
+      nextBucket.notes = nextBucket.notes.filter((f) => f?.path !== file.path);
+    }
+
+    return { ...index, [dateStr]: nextBucket };
+  }
+
+  function removeFileFromCreatedOnDayIndex(
+    index: Record<string, CreatedOnDayBucket>,
+    path: string,
+    ctime?: number
+  ): Record<string, CreatedOnDayBucket> {
+    if (!path) {
+      return index;
+    }
+
+    const dateStr = ctime ? formatLocalDateYYYYMMDD(ctime) : null;
+
+    const removeFromBucket = (bucket: CreatedOnDayBucket): CreatedOnDayBucket => {
+      return {
+        notes: removeByPath(bucket.notes ?? [], path),
+        files: removeByPath(bucket.files ?? [], path),
+      };
+    };
+
+    if (dateStr && index[dateStr]) {
+      const prev = index[dateStr];
+      const nextBucket = removeFromBucket(prev);
+
+      const changed =
+        nextBucket.notes.length !== (prev.notes ?? []).length ||
+        nextBucket.files.length !== (prev.files ?? []).length;
+
+      if (!changed) {
+        return index;
+      }
+
+      const nextIndex = { ...index };
+      if (nextBucket.notes.length === 0 && nextBucket.files.length === 0) {
+        delete nextIndex[dateStr];
+      } else {
+        nextIndex[dateStr] = nextBucket;
+      }
+      return nextIndex;
+    }
+
+    // Fallback: scan (rare; only when ctime is missing).
+    let changedAny = false;
+    const nextIndex: Record<string, CreatedOnDayBucket> = { ...index };
+
+    for (const [k, bucket] of Object.entries(nextIndex)) {
+      const nextBucket = removeFromBucket(bucket);
+      const changed =
+        nextBucket.notes.length !== (bucket.notes ?? []).length ||
+        nextBucket.files.length !== (bucket.files ?? []).length;
+
+      if (!changed) {
+        continue;
+      }
+
+      changedAny = true;
+      if (nextBucket.notes.length === 0 && nextBucket.files.length === 0) {
+        delete nextIndex[k];
+      } else {
+        nextIndex[k] = nextBucket;
+      }
+    }
+
+    return changedAny ? nextIndex : index;
+  }
+
+  function applyCreatedOnDayIndexOp(
+    index: Record<string, CreatedOnDayBucket>,
+    op: CreatedOnDayIndexOp
+  ): Record<string, CreatedOnDayBucket> {
+    if (op.type === "create") {
+      return addFileToCreatedOnDayIndex(index, op.file);
+    }
+
+    if (op.type === "delete") {
+      return removeFileFromCreatedOnDayIndex(index, op.path, op.ctime);
+    }
+
+    // rename
+    const ctime = op.ctime ?? op.file.stat?.ctime;
+    let next = removeFileFromCreatedOnDayIndex(index, op.oldPath, ctime);
+    next = removeFileFromCreatedOnDayIndex(next, op.file.path, ctime);
+
+    if (shouldIndexFile(op.file) && ctime) {
+      next = addFileToCreatedOnDayIndex(next, op.file);
+    }
+
+    return next;
+  }
+
+  function handleCreatedOnDayIndexOp(op: CreatedOnDayIndexOp): void {
+    if (!$settings.listViewIncludeCreatedDays) {
+      return;
+    }
+
+    if (createdOnDayIndexLoading) {
+      createdOnDayIndexPendingOps = [...createdOnDayIndexPendingOps, op];
+      return;
+    }
+
+    if (!createdOnDayIndexBuiltOnce) {
+      // We'll build the index when List view is opened / setting is enabled.
+      return;
+    }
+
+    const next = applyCreatedOnDayIndexOp(createdOnDayIndex, op);
+    if (next !== createdOnDayIndex) {
+      createdOnDayIndex = next;
+      scheduleListRecompute();
+    }
+  }
+
+  function onVaultCreate(file: unknown): void {
+    if (!(file instanceof TFile)) {
+      return;
+    }
+
+    handleCreatedOnDayIndexOp({ type: "create", file });
+  }
+
+  function onVaultDelete(file: unknown): void {
+    if (!(file instanceof TFile)) {
+      return;
+    }
+
+    handleCreatedOnDayIndexOp({
+      type: "delete",
+      path: file.path,
+      ctime: file.stat?.ctime,
+    });
+  }
+
+  function onVaultRename(file: unknown, oldPath: unknown): void {
+    if (!(file instanceof TFile)) {
+      return;
+    }
+
+    const oldPathStr = typeof oldPath === "string" ? oldPath : "";
+
+    handleCreatedOnDayIndexOp({
+      type: "rename",
+      file,
+      oldPath: oldPathStr,
+      ctime: file.stat?.ctime,
+    });
+  }
+
+  async function ensureCreatedOnDayIndexBuilt(): Promise<void> {
+    if (!$settings.listViewIncludeCreatedDays) {
+      return;
+    }
+    if (createdOnDayIndexBuiltOnce || createdOnDayIndexLoading) {
+      return;
+    }
+
+    await rebuildCreatedOnDayIndex();
+  }
+
   async function rebuildCreatedOnDayIndex(): Promise<void> {
     if (!$settings.listViewIncludeCreatedDays) {
+      createdOnDayIndexBuildNonce++;
       createdOnDayIndex = {};
+      createdOnDayIndexBuiltOnce = false;
       createdOnDayIndexLoading = false;
       createdOnDayIndexError = null;
+      createdOnDayIndexPendingOps = [];
       scheduleListRecompute();
       return;
     }
 
-    const nonce = ++createdOnDayIndexNonce;
+    if (createdOnDayIndexLoading) {
+      return;
+    }
+
+    const nonce = ++createdOnDayIndexBuildNonce;
     createdOnDayIndexLoading = true;
     createdOnDayIndexError = null;
+    createdOnDayIndexPendingOps = [];
+
+    const t0 = perfNow();
 
     try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -646,6 +903,7 @@
       const vault = app?.vault;
       if (!vault?.getFiles) {
         createdOnDayIndex = {};
+        createdOnDayIndexBuiltOnce = true;
         return;
       }
 
@@ -654,7 +912,7 @@
 
       const chunkSize = 2000;
       for (let i = 0; i < files.length; i += chunkSize) {
-        if (nonce !== createdOnDayIndexNonce) {
+        if (nonce !== createdOnDayIndexBuildNonce) {
           return;
         }
 
@@ -669,7 +927,7 @@
             continue;
           }
 
-          const dateStr = window.moment(ctime).format("YYYY-MM-DD");
+          const dateStr = formatLocalDateYYYYMMDD(ctime);
           const bucket = next[dateStr] ?? (next[dateStr] = { notes: [], files: [] });
 
           if (isNoteLikeFile(file)) {
@@ -694,56 +952,47 @@
         bucket.files.sort((a, b) => a.path.localeCompare(b.path));
       }
 
-      if (nonce !== createdOnDayIndexNonce) {
+      if (nonce !== createdOnDayIndexBuildNonce) {
         return;
       }
 
-      createdOnDayIndex = next;
-      // Updating index may require list recompute to surface days without daily notes
+      let nextIndex: Record<string, CreatedOnDayBucket> = next;
+      if (createdOnDayIndexPendingOps.length) {
+        for (const op of createdOnDayIndexPendingOps) {
+          nextIndex = applyCreatedOnDayIndexOp(nextIndex, op);
+        }
+      }
+
+      createdOnDayIndex = nextIndex;
+      createdOnDayIndexBuiltOnce = true;
+
+      if (isPerfDebugEnabled()) {
+        const dt = perfNow() - t0;
+        const bucketCount = Object.keys(nextIndex).length;
+        console.debug(
+          `[Calendar][perf] createdOnDayIndex build: files=${files.length}, buckets=${bucketCount}, ${dt.toFixed(
+            1
+          )}ms`
+        );
+      }
+
+      // Updating index may require list recompute to surface days without daily notes.
       scheduleListRecompute();
     } catch (err) {
       console.error("[Calendar] Failed to build created-on-day index", err);
-      if (nonce !== createdOnDayIndexNonce) {
+      if (nonce !== createdOnDayIndexBuildNonce) {
         return;
       }
 
       createdOnDayIndexError = err instanceof Error ? err.message : String(err);
       createdOnDayIndex = {};
+      createdOnDayIndexBuiltOnce = true;
     } finally {
-      if (nonce === createdOnDayIndexNonce) {
+      if (nonce === createdOnDayIndexBuildNonce) {
         createdOnDayIndexLoading = false;
+        createdOnDayIndexPendingOps = [];
       }
     }
-  }
-
-  function scheduleCreatedOnDayIndexRebuild(): void {
-    if (!showList || !$settings.listViewIncludeCreatedDays) {
-      return;
-    }
-
-    if (createdOnDayIndexTimer !== null) {
-      window.clearTimeout(createdOnDayIndexTimer);
-    }
-
-    createdOnDayIndexTimer = window.setTimeout(() => {
-      createdOnDayIndexTimer = null;
-      void rebuildCreatedOnDayIndex();
-    }, CREATED_ON_DAY_RECOMPUTE_DEBOUNCE_MS);
-  }
-
-  async function getCachedWordCount(file: TFile): Promise<number> {
-    const mtime = file.stat?.mtime ?? 0;
-
-    const cached = wordCountCache.get(file.path);
-    if (cached && cached.mtime === mtime) {
-      return cached.wordCount;
-    }
-
-    const fileContents = await window.app.vault.cachedRead(file);
-    const wordCount = getWordCount(fileContents);
-
-    wordCountCache.set(file.path, { mtime, wordCount });
-    return wordCount;
   }
 
   function getCachedOllamaTitle(
@@ -859,12 +1108,20 @@
 
   async function computeList(): Promise<void> {
     const nonce = ++listComputeNonce;
+    const debugPerf = isPerfDebugEnabled();
+    const t0 = debugPerf ? perfNow() : 0;
+
+    let dailyFileCount = 0;
+    let itemCount = 0;
+    let groupCount = 0;
+
     listLoading = true;
     listError = null;
 
     try {
       const dailyNotesRecord = $dailyNotes ?? {};
       const files = Object.values(dailyNotesRecord).filter(Boolean) as TFile[];
+      dailyFileCount = files.length;
 
       const listViewMinWords = $settings.listViewMinWords ?? 0;
       const includeAll = listViewMinWords <= 0;
@@ -884,7 +1141,7 @@
 
             let qualifies = true;
             if (!includeAll) {
-              const wordCount = await getCachedWordCount(file);
+              const wordCount = await getWordCountFromFile(file);
               qualifies = wordCount >= listViewMinWords;
             }
 
@@ -928,8 +1185,10 @@
         parseDateStr: (dateStr) => window.moment(dateStr, "YYYY-MM-DD"),
         getDayDateUID: (date) => getDateUID(date, "day"),
       });
+      itemCount = items.length;
 
       const groups = buildListGroups(items, groupingPreset, sortOrder);
+      groupCount = groups.length;
 
       // Default: expand groups along today's path for the selected preset; others collapsed.
       const todayPath = getListGroupIdPathForDate(today ?? window.moment(), groupingPreset);
@@ -1004,6 +1263,15 @@
       listGroups = [];
     } finally {
       if (nonce === listComputeNonce) {
+        if (debugPerf) {
+          const dt = perfNow() - t0;
+          console.debug(
+            `[Calendar][perf] list recompute: dailyNotes=${dailyFileCount}, items=${itemCount}, groups=${groupCount}, ${dt.toFixed(
+              1
+            )}ms`
+          );
+        }
+
         listLoading = false;
       }
     }
@@ -1110,16 +1378,19 @@
   $: {
     const includeCreatedDays = $settings.listViewIncludeCreatedDays ?? true;
 
-    // If the user enables created-on-day while List view is open, kick off a rebuild.
+    // If the user enables created-on-day while List view is open, kick off a build.
     if (showList && includeCreatedDays && prevListViewIncludeCreatedDays === false) {
-      void rebuildCreatedOnDayIndex();
+      void ensureCreatedOnDayIndexBuilt();
     }
 
     // If the user disables it, clear index-derived UI immediately.
-    if (showList && !includeCreatedDays && prevListViewIncludeCreatedDays === true) {
+    if (!includeCreatedDays && prevListViewIncludeCreatedDays === true) {
+      createdOnDayIndexBuildNonce++;
       createdOnDayIndex = {};
+      createdOnDayIndexBuiltOnce = false;
       createdOnDayIndexLoading = false;
       createdOnDayIndexError = null;
+      createdOnDayIndexPendingOps = [];
       scheduleListRecompute();
     }
 
@@ -1209,9 +1480,9 @@
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const vault = (window as any).app?.vault;
     if (vault?.on && vault?.offref) {
-      vaultEventRefs.push(vault.on("create", scheduleCreatedOnDayIndexRebuild));
-      vaultEventRefs.push(vault.on("delete", scheduleCreatedOnDayIndexRebuild));
-      vaultEventRefs.push(vault.on("rename", scheduleCreatedOnDayIndexRebuild));
+      vaultEventRefs.push(vault.on("create", onVaultCreate));
+      vaultEventRefs.push(vault.on("delete", onVaultDelete));
+      vaultEventRefs.push(vault.on("rename", onVaultRename));
     }
 
     schedule();
@@ -1304,9 +1575,6 @@
     clearInterval(heartbeat);
     if (listComputeTimer !== null) {
       window.clearTimeout(listComputeTimer);
-    }
-    if (createdOnDayIndexTimer !== null) {
-      window.clearTimeout(createdOnDayIndexTimer);
     }
   });
 </script>
