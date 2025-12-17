@@ -623,6 +623,14 @@
   align-items: stretch;
 }
 
+/* Used by list virtualization: padding simulates the offscreen rows. */
+.calendar-view .calendar-virtual-window {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-items: stretch;
+}
+
 .calendar-view .calendar-list-row {
   display: flex;
   align-items: center;

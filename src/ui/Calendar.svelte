@@ -74,6 +74,7 @@
   let showListJustOpened = false;
 
   let calendarBaseWrapperEl: HTMLDivElement | null = null;
+  let listScrollEl: HTMLDivElement | null = null;
 
   // Inserted into the Calendar header (nav) after mount.
   let listControlsEl: HTMLDivElement | null = null;
@@ -2034,6 +2035,7 @@
   {#if showList}
     <div
       class="calendar-pane calendar-list-view"
+      bind:this={listScrollEl}
       transition:slide={{ duration: 140 }}
     >
       {#if listLoading}
@@ -2053,6 +2055,8 @@
           node={group}
           openState={groupOpenState}
           onToggle={onToggleGroup}
+          scrollParent={listScrollEl}
+          dayOpenState={dayOpenState}
           let:items
         >
           {#each items as item (item.dateUID)}
