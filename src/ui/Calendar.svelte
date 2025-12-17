@@ -20,6 +20,7 @@
     buildListItems,
     getListGroupIdPathForDate,
     normalizeListViewGroupingPreset,
+    normalizeListViewSortOrder,
   } from "./listViewModel";
   import type {
     CreatedOnDayBucket,
@@ -27,6 +28,7 @@
     ListGroupNode,
     ListItem,
     ListViewGroupingPreset,
+    ListViewSortOrder,
   } from "./listViewModel";
   import {
     createOllamaClient,
@@ -250,6 +252,7 @@
   // Unique IDs for menu fields (avoid collisions if multiple Calendar views are open).
   const ollamaIdPrefix = `calendar-ollama-${Math.random().toString(36).slice(2, 8)}`;
   const listGroupingPresetInputId = `${ollamaIdPrefix}-list-grouping`;
+  const listSortOrderInputId = `${ollamaIdPrefix}-list-sort-order`;
   const listMinWordsInputId = `${ollamaIdPrefix}-list-minwords`;
   const listIncludeCreatedInputId = `${ollamaIdPrefix}-list-include-created`;
   const ollamaUrlInputId = `${ollamaIdPrefix}-url`;
@@ -417,6 +420,12 @@
     const el = event.currentTarget as HTMLSelectElement;
     const value = (el?.value ?? "").trim() as ListViewGroupingPreset;
     await writeOptions({ listViewGroupingPreset: value });
+  }
+
+  async function onChangeListViewSortOrder(event: Event): Promise<void> {
+    const el = event.currentTarget as HTMLSelectElement;
+    const value = (el?.value ?? "").trim() as ListViewSortOrder;
+    await writeOptions({ listViewSortOrder: value });
   }
 
   async function onChangeListViewMinWords(event: Event): Promise<void> {
@@ -906,18 +915,21 @@
         }
       }
 
+      const groupingPreset = normalizeListViewGroupingPreset(
+        $settings.listViewGroupingPreset
+      );
+      const sortOrder = normalizeListViewSortOrder($settings.listViewSortOrder);
+
       const items = buildListItems({
         dailyNoteCandidates: candidates,
         createdOnDayIndex: includeCreatedDays ? createdOnDayIndex : {},
         includeCreatedDays,
+        sortOrder,
         parseDateStr: (dateStr) => window.moment(dateStr, "YYYY-MM-DD"),
         getDayDateUID: (date) => getDateUID(date, "day"),
       });
 
-      const groupingPreset = normalizeListViewGroupingPreset(
-        $settings.listViewGroupingPreset
-      );
-      const groups = buildListGroups(items, groupingPreset);
+      const groups = buildListGroups(items, groupingPreset, sortOrder);
 
       // Default: expand groups along today's path for the selected preset; others collapsed.
       const todayPath = getListGroupIdPathForDate(today ?? window.moment(), groupingPreset);
@@ -1120,6 +1132,7 @@
     $settings.listViewMinWords;
     $settings.listViewIncludeCreatedDays;
     $settings.listViewGroupingPreset;
+    $settings.listViewSortOrder;
 
     // Avoid double-recompute when the user just opened the list view and we already ran computeList().
     if (showListJustOpened) {
@@ -1422,6 +1435,45 @@
                       <option value="year_month_name">Year → Month Name (YYYY/MMMM)</option>
                       <option value="year_quarter">Year → Quarter (YYYY/Q#)</option>
                       <option value="year_week">ISO Year → ISO Week (GGGG/WW)</option>
+                    </select>
+
+                    <span class="calendar-select-chevron" aria-hidden="true">
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        viewBox="0 0 24 24"
+                        width="16"
+                        height="16"
+                        fill="currentColor"
+                      >
+                        <path d="M7 10l5 5 5-5z" />
+                      </svg>
+                    </span>
+                  </div>
+                </div>
+
+                <div class="calendar-ollama-field">
+                  <label for={listSortOrderInputId}>
+                    Order
+                    <span
+                      class="calendar-tip"
+                      data-calendar-tooltip="Choose whether groups/days are shown newest-first or oldest-first."
+                      tabindex="0"
+                      on:mouseenter={onTipEnter}
+                      on:mouseleave={onTipLeave}
+                      on:focus={onTipEnter}
+                      on:blur={onTipLeave}
+                    >
+                      ?
+                    </span>
+                  </label>
+                  <div class="calendar-select">
+                    <select
+                      id={listSortOrderInputId}
+                      value={normalizeListViewSortOrder($settings.listViewSortOrder)}
+                      on:input={onChangeListViewSortOrder}
+                    >
+                      <option value="desc">Newest → Oldest</option>
+                      <option value="asc">Oldest → Newest</option>
                     </select>
 
                     <span class="calendar-select-chevron" aria-hidden="true">

@@ -69,6 +69,25 @@ describe("ui/listViewModel", () => {
     expect(items[0].filePath).toBe("");
   });
 
+  it("supports ascending/descending sort order (buildListItems)", () => {
+    const params = {
+      dailyNoteCandidates: [],
+      createdOnDayIndex: {
+        "2025-12-14": { notes: [mockFile("Notes/x.md")], files: [] },
+        "2025-12-15": { notes: [mockFile("Notes/y.md")], files: [] },
+      },
+      includeCreatedDays: true,
+      parseDateStr,
+      getDayDateUID,
+    };
+
+    const desc = buildListItems({ ...params, sortOrder: "desc" });
+    expect(desc.map((i) => i.dateStr)).toEqual(["2025-12-15", "2025-12-14"]);
+
+    const asc = buildListItems({ ...params, sortOrder: "asc" });
+    expect(asc.map((i) => i.dateStr)).toEqual(["2025-12-14", "2025-12-15"]);
+  });
+
   it("keeps the daily note filePath when the day is included via created items (prevents daily note appearing in created list)", () => {
     const date = moment("2025-12-13", "YYYY-MM-DD", true);
 
@@ -210,6 +229,21 @@ describe("ui/listViewModel", () => {
       const groups = buildListGroups(items, "year");
 
       expect(groups.map((g) => g.id)).toEqual(["2025", "2024"]);
+    });
+
+    it("supports sorting groups/items oldest first (sortOrder=asc)", () => {
+      const items = [
+        makeItem("2025-12-15"),
+        makeItem("2024-12-31"),
+        makeItem("2025-01-01"),
+      ];
+      const groups = buildListGroups(items, "year", "asc");
+
+      expect(groups.map((g) => g.id)).toEqual(["2024", "2025"]);
+      expect(groups[1].items.map((i) => i.dateStr)).toEqual([
+        "2025-01-01",
+        "2025-12-15",
+      ]);
     });
   });
 });

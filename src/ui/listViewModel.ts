@@ -8,6 +8,20 @@ export type ListViewGroupingPreset =
   | "year_quarter"
   | "year_week";
 
+export type ListViewSortOrder = "desc" | "asc";
+
+export function normalizeListViewSortOrder(
+  sortOrder: unknown
+): ListViewSortOrder {
+  switch (sortOrder) {
+    case "asc":
+    case "desc":
+      return sortOrder;
+    default:
+      return "desc";
+  }
+}
+
 export type CreatedOnDayBucket = { notes: TFile[]; files: TFile[] };
 
 export type DailyNoteCandidate = {
@@ -55,6 +69,7 @@ export function buildListItems(params: {
   dailyNoteCandidates: DailyNoteCandidate[];
   createdOnDayIndex?: Record<string, CreatedOnDayBucket> | null;
   includeCreatedDays: boolean;
+  sortOrder?: unknown;
   parseDateStr: (dateStr: string) => Moment;
   getDayDateUID: (date: Moment) => string;
 }): ListItem[] {
@@ -62,6 +77,7 @@ export function buildListItems(params: {
     dailyNoteCandidates,
     createdOnDayIndex,
     includeCreatedDays,
+    sortOrder,
     parseDateStr,
     getDayDateUID,
   } = params;
@@ -136,7 +152,10 @@ export function buildListItems(params: {
     });
   }
 
-  items.sort((a, b) => b.epoch - a.epoch);
+  const normalizedSortOrder = normalizeListViewSortOrder(sortOrder);
+  items.sort((a, b) =>
+    normalizedSortOrder === "asc" ? a.epoch - b.epoch : b.epoch - a.epoch
+  );
   return items;
 }
 
@@ -234,9 +253,23 @@ type ListGroupNodeInternal = Omit<ListGroupNode, "groups"> & {
 
 export function buildListGroups(
   items: ListItem[],
-  preset: unknown
+  preset: unknown,
+  sortOrder?: unknown
 ): ListGroupNode[] {
   const normalized = normalizeListViewGroupingPreset(preset);
+  const normalizedSortOrder = normalizeListViewSortOrder(sortOrder);
+
+  const compareGroupByEpoch = (
+    a: ListGroupNodeInternal,
+    b: ListGroupNodeInternal
+  ): number => {
+    const aEpoch = a.maxEpoch ?? 0;
+    const bEpoch = b.maxEpoch ?? 0;
+    return normalizedSortOrder === "asc" ? aEpoch - bEpoch : bEpoch - aEpoch;
+  };
+
+  const compareItemByEpoch = (a: ListItem, b: ListItem): number =>
+    normalizedSortOrder === "asc" ? a.epoch - b.epoch : b.epoch - a.epoch;
 
   const root = new Map<string, ListGroupNodeInternal>();
 
@@ -278,20 +311,22 @@ export function buildListGroups(
 
   const finalize = (node: ListGroupNodeInternal): ListGroupNode => {
     const groups = Array.from(node.children.values())
-      .sort((a, b) => (b.maxEpoch ?? 0) - (a.maxEpoch ?? 0))
+      .sort(compareGroupByEpoch)
       .map(finalize);
+
+    const sortedItems = groups.length
+      ? []
+      : node.items.slice().sort(compareItemByEpoch);
 
     return {
       id: node.id,
       label: node.label,
       groups,
       // Only leaf groups should carry items.
-      items: groups.length ? [] : node.items,
+      items: sortedItems,
       maxEpoch: node.maxEpoch,
     };
   };
 
-  return Array.from(root.values())
-    .sort((a, b) => (b.maxEpoch ?? 0) - (a.maxEpoch ?? 0))
-    .map(finalize);
+  return Array.from(root.values()).sort(compareGroupByEpoch).map(finalize);
 }

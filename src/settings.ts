@@ -9,7 +9,7 @@ import type { ILocaleOverride, IWeekStartOption } from "obsidian-calendar-ui";
 import { DEFAULT_WEEK_FORMAT, DEFAULT_WORDS_PER_DOT } from "src/constants";
 
 import type CalendarPlugin from "./main";
-import type { ListViewGroupingPreset } from "./ui/listViewModel";
+import type { ListViewGroupingPreset, ListViewSortOrder } from "./ui/listViewModel";
 
 export interface ISettings {
   wordsPerDot: number;
@@ -20,6 +20,7 @@ export interface ISettings {
   listViewMinWords: number;
   listViewIncludeCreatedDays: boolean;
   listViewGroupingPreset: ListViewGroupingPreset;
+  listViewSortOrder: ListViewSortOrder;
 
   // Weekly Note settings
   showWeeklyNote: boolean;
@@ -57,6 +58,7 @@ export const defaultSettings = Object.freeze({
   listViewMinWords: 0,
   listViewIncludeCreatedDays: true,
   listViewGroupingPreset: "year" as ListViewGroupingPreset,
+  listViewSortOrder: "desc" as ListViewSortOrder,
 
   showWeeklyNote: false,
   weeklyNoteFormat: "",
