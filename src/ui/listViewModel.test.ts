@@ -192,6 +192,18 @@ describe("ui/listViewModel", () => {
       expect(months.map((m) => m.label)).toEqual(["December", "November"]);
     });
 
+    it("nests month groups under year and labels months as number-name (year_month_num_name)", () => {
+      const items = [makeItem("2025-12-15"), makeItem("2025-11-30")];
+      const groups = buildListGroups(items, "year_month_num_name");
+
+      expect(groups).toHaveLength(1);
+      const months = groups[0].groups;
+
+      // IDs should be numeric (stable across locale changes)
+      expect(months.map((m) => m.id)).toEqual(["2025/12", "2025/11"]);
+      expect(months.map((m) => m.label)).toEqual(["12-December", "11-November"]);
+    });
+
     it("nests quarter groups under year (year_quarter)", () => {
       const d1 = moment("2025-12-15", "YYYY-MM-DD", true);
       const q1 = `Q${d1.quarter()}`;

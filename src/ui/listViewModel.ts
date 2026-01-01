@@ -5,6 +5,7 @@ export type ListViewGroupingPreset =
   | "year"
   | "year_month"
   | "year_month_name"
+  | "year_month_num_name"
   | "year_quarter"
   | "year_week";
 
@@ -170,6 +171,7 @@ export function normalizeListViewGroupingPreset(
     case "year":
     case "year_month":
     case "year_month_name":
+    case "year_month_num_name":
     case "year_quarter":
     case "year_week":
       return preset;
@@ -207,6 +209,17 @@ function getSegmentsForDate(
         { idPart: year, label: year },
         // Keep id numeric so open/closed state is stable across locale changes.
         { idPart: monthId, label: monthLabel },
+      ];
+    }
+
+    case "year_month_num_name": {
+      const year = String(date.year());
+      const monthId = pad2(date.month() + 1);
+      const monthLabel = date.format("MMMM");
+      return [
+        { idPart: year, label: year },
+        // Keep id numeric so open/closed state is stable across locale changes.
+        { idPart: monthId, label: `${monthId}-${monthLabel}` },
       ];
     }
 

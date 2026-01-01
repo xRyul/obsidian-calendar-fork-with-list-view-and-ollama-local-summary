@@ -1983,6 +1983,7 @@
                       <option value="year">Year (YYYY)</option>
                       <option value="year_month">Year → Month (YYYY/MM)</option>
                       <option value="year_month_name">Year → Month Name (YYYY/MMMM)</option>
+                      <option value="year_month_num_name">Year → Month # - Name (YYYY/MM-MMMM)</option>
                       <option value="year_quarter">Year → Quarter (YYYY/Q#)</option>
                       <option value="year_week">ISO Year → ISO Week (GGGG/WW)</option>
                     </select>
