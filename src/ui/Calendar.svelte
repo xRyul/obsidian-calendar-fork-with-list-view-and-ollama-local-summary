@@ -14,6 +14,7 @@
   import { getDateFromFile, getDateUID } from "obsidian-daily-notes-interface";
 
   import ListGroup from "./ListGroup.svelte";
+  import { LIST_ITEM_TAG_COLORS } from "./listItemColorTagMenu";
 
   import {
     buildListGroups,
@@ -1602,18 +1603,6 @@
     onClickDay(date, isMetaPressed);
   }
 
-  type ListItemTagColor = { label: string; color: string };
-
-  const LIST_ITEM_TAG_COLORS: ListItemTagColor[] = [
-    { label: "Red", color: "#ef4444" },
-    { label: "Orange", color: "#f97316" },
-    { label: "Yellow", color: "#eab308" },
-    { label: "Green", color: "#22c55e" },
-    { label: "Blue", color: "#3b82f6" },
-    { label: "Purple", color: "#a855f7" },
-    { label: "Pink", color: "#ec4899" },
-    { label: "Gray", color: "#64748b" },
-  ];
 
   function getListItemTagKeyForDay(item: ListItem): string {
     return `day:${item.dateStr}`;
@@ -1683,7 +1672,6 @@
     const current = getListItemColorTagFrom($listItemColorTags, key) ?? "";
 
     const menu = new Menu();
-    menu.addItem((item) => item.setTitle("Color tag").setIsLabel(true));
 
     menu.addItem((item) => {
       item.setTitle("None");
@@ -1693,9 +1681,12 @@
 
     for (const opt of LIST_ITEM_TAG_COLORS) {
       menu.addItem((item) => {
+        const isSelected = current === opt.color;
+
         item.setTitle(opt.label);
-        item.setChecked(current === opt.color);
-        item.onClick(() => setListItemColorTag(key, opt.color));
+        item.setIcon(opt.iconId);
+        item.setChecked(isSelected);
+        item.onClick(() => setListItemColorTag(key, isSelected ? null : opt.color));
       });
     }
 

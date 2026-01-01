@@ -1,5 +1,5 @@
 import type { Moment, WeekSpec } from "moment";
-import { App, Plugin, WorkspaceLeaf } from "obsidian";
+import { App, Plugin, WorkspaceLeaf, addIcon } from "obsidian";
 
 import type { CustomListTitles } from "src/customListTitles";
 import { sanitizeCustomListTitles } from "src/customListTitles";
@@ -22,6 +22,10 @@ import {
   ISettings,
 } from "./settings";
 import CalendarView from "./view";
+import {
+  buildListItemTagColorSwatchSvg,
+  LIST_ITEM_TAG_COLORS,
+} from "./ui/listItemColorTagMenu";
 
 declare global {
   interface Window {
@@ -38,6 +42,12 @@ type PluginDataV3 = {
   listItemColorTags: ListItemColorTags;
   viewState: CalendarViewState;
 };
+
+function registerListItemColorTagSwatchIcons(): void {
+  for (const opt of LIST_ITEM_TAG_COLORS) {
+    addIcon(opt.iconId, buildListItemTagColorSwatchSvg(opt.color));
+  }
+}
 
 export default class CalendarPlugin extends Plugin {
   public options: ISettings;
@@ -66,6 +76,8 @@ export default class CalendarPlugin extends Plugin {
 
   async onload(): Promise<void> {
     this.isLoadingData = true;
+
+    registerListItemColorTagSwatchIcons();
 
     this.register(
       settings.subscribe((value) => {
