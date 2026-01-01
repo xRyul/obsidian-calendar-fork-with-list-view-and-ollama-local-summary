@@ -54,6 +54,7 @@
   } from "src/customListTitles";
 
   import type { ISettings } from "src/settings";
+  import type { CalendarViewState } from "src/viewState";
   import {
     activeFile,
     customListTitles,
@@ -80,6 +81,9 @@
 
   let showList = false;
   let showListJustOpened = false;
+
+  // Prevent initial reactive writes from clobbering the persisted state before we've restored it.
+  let viewStateHydrated = false;
 
   let calendarBaseWrapperEl: HTMLDivElement | null = null;
   let listScrollEl: HTMLDivElement | null = null;
@@ -299,6 +303,62 @@
       settings.update((old) => ({ ...old, ...partial }));
     } catch (err) {
       console.error("[Calendar] Failed to write options", err);
+    }
+  }
+
+  function readViewState(): CalendarViewState | null {
+    try {
+      const plugin = getCalendarPlugin();
+      const fn = plugin?.getViewState;
+      return typeof fn === "function" ? (fn.call(plugin) as CalendarViewState) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function writeViewState(partial: Partial<CalendarViewState>): void {
+    try {
+      const plugin = getCalendarPlugin();
+      const fn = plugin?.updateViewState;
+      if (typeof fn === "function") {
+        fn.call(plugin, partial);
+      }
+    } catch (err) {
+      console.error("[Calendar] Failed to update view state", err);
+    }
+  }
+
+  let viewStateSaveTimer: number | null = null;
+  let pendingViewState: Partial<CalendarViewState> = {};
+  const VIEW_STATE_SAVE_DEBOUNCE_MS = 300;
+
+  function schedulePersistViewState(partial: Partial<CalendarViewState>): void {
+    if (!viewStateHydrated || !$settings.rememberViewState) {
+      return;
+    }
+
+    pendingViewState = { ...(pendingViewState ?? {}), ...(partial ?? {}) };
+
+    if (viewStateSaveTimer !== null) {
+      window.clearTimeout(viewStateSaveTimer);
+    }
+
+    viewStateSaveTimer = window.setTimeout(() => {
+      viewStateSaveTimer = null;
+      const snapshot = pendingViewState;
+      pendingViewState = {};
+      writeViewState(snapshot);
+    }, VIEW_STATE_SAVE_DEBOUNCE_MS);
+  }
+
+  function formatDisplayedMonthForStorage(month: Moment | null | undefined): string | null {
+    try {
+      if (!month || typeof month.isValid !== "function" || !month.isValid()) {
+        return null;
+      }
+      return month.clone().startOf("month").format("YYYY-MM-DD");
+    } catch {
+      return null;
     }
   }
 
@@ -566,7 +626,7 @@
   let dayOpenState: Record<string, boolean> = {};
 
   type DayChildKey = "files";
-  type DayChildOpenState = { files: boolean };
+  type DayChildOpenState = { files?: boolean };
   let dayChildOpenState: Record<string, DayChildOpenState> = {};
 
   let createdOnDayIndex: Record<string, CreatedOnDayBucket> = {};
@@ -703,14 +763,35 @@
   let listComputeTimer: number | null = null;
   const LIST_RECOMPUTE_DEBOUNCE_MS = 750;
 
-  function toggleList(): void {
-    showList = !showList;
+  function openList(): void {
     if (showList) {
-      showListJustOpened = true;
-      void computeList();
-      if ($settings.listViewIncludeCreatedDays) {
-        void ensureCreatedOnDayIndexBuilt();
-      }
+      return;
+    }
+
+    showList = true;
+    showListJustOpened = true;
+    void computeList();
+    if ($settings.listViewIncludeCreatedDays) {
+      void ensureCreatedOnDayIndexBuilt();
+    }
+
+    schedulePersistViewState({ showList });
+  }
+
+  function closeList(): void {
+    if (!showList) {
+      return;
+    }
+
+    showList = false;
+    schedulePersistViewState({ showList });
+  }
+
+  function toggleList(): void {
+    if (showList) {
+      closeList();
+    } else {
+      openList();
     }
   }
 
@@ -1341,31 +1422,23 @@
       groupOpenState = nextOpenState;
 
       // Maintain per-day open state (and sub-toggle open state) across refreshes.
+      // Keep these maps sparse (only true entries) to avoid large persisted blobs on big vaults.
       const dayUIDSet = new Set(items.map((i) => i.dateUID));
+
       const nextDayOpenState: Record<string, boolean> = { ...dayOpenState };
-      const nextDayChildOpenState: Record<string, DayChildOpenState> = {
-        ...dayChildOpenState,
-      };
-
-      for (const item of items) {
-        if (nextDayOpenState[item.dateUID] === undefined) {
-          nextDayOpenState[item.dateUID] = false;
-        }
-
-        const prevChild = nextDayChildOpenState[item.dateUID];
-        nextDayChildOpenState[item.dateUID] = prevChild
-          ? { files: !!prevChild.files }
-          : { files: false };
-      }
-
       for (const key of Object.keys(nextDayOpenState)) {
         if (!dayUIDSet.has(key)) {
           delete nextDayOpenState[key];
         }
       }
-      for (const key of Object.keys(nextDayChildOpenState)) {
-        if (!dayUIDSet.has(key)) {
-          delete nextDayChildOpenState[key];
+
+      const nextDayChildOpenState: Record<string, DayChildOpenState> = {};
+      for (const [dateUID, childState] of Object.entries(dayChildOpenState)) {
+        if (!dayUIDSet.has(dateUID)) {
+          continue;
+        }
+        if (childState?.files) {
+          nextDayChildOpenState[dateUID] = { files: true };
         }
       }
 
@@ -1399,11 +1472,22 @@
   function onToggleGroup(id: string, event: Event): void {
     const el = event.currentTarget as HTMLDetailsElement;
     groupOpenState = { ...groupOpenState, [id]: el.open };
+    schedulePersistViewState({ groupOpenState });
   }
 
   function onToggleDay(dateUID: string, event: Event): void {
     const el = event.currentTarget as HTMLDetailsElement;
-    dayOpenState = { ...dayOpenState, [dateUID]: el.open };
+    const isOpen = !!el.open;
+
+    if (isOpen) {
+      dayOpenState = { ...dayOpenState, [dateUID]: true };
+    } else {
+      const next = { ...dayOpenState };
+      delete next[dateUID];
+      dayOpenState = next;
+    }
+
+    schedulePersistViewState({ dayOpenState });
   }
 
   function onToggleDayChild(
@@ -1412,11 +1496,29 @@
     event: Event
   ): void {
     const el = event.currentTarget as HTMLDetailsElement;
-    const prev = dayChildOpenState[dateUID] ?? { files: false };
-    dayChildOpenState = {
-      ...dayChildOpenState,
-      [dateUID]: { ...prev, [child]: el.open },
-    };
+    const isOpen = !!el.open;
+
+    if (isOpen) {
+      const prev = dayChildOpenState[dateUID] ?? {};
+      dayChildOpenState = {
+        ...dayChildOpenState,
+        [dateUID]: { ...prev, [child]: true },
+      };
+    } else {
+      const next = { ...dayChildOpenState };
+      const entry: DayChildOpenState = { ...(next[dateUID] ?? {}) };
+      delete entry[child];
+
+      if (!entry.files) {
+        delete next[dateUID];
+      } else {
+        next[dateUID] = entry;
+      }
+
+      dayChildOpenState = next;
+    }
+
+    schedulePersistViewState({ dayChildOpenState });
   }
 
   function getCreatedNotesForItem(item: ListItem): TFile[] {
@@ -1718,6 +1820,36 @@
     }
   }, 1000 * 60);
 
+  // Persist the displayed month after hydration.
+  $: if (viewStateHydrated && $settings.rememberViewState) {
+    schedulePersistViewState({
+      displayedMonth: formatDisplayedMonthForStorage(displayedMonth),
+    });
+  }
+
+  // When the user enables persistence, store a snapshot once so the next restart matches
+  // the current UI even if they don't interact with the calendar after toggling the option.
+  let didPersistViewStateOnEnable = false;
+
+  function persistFullViewStateSnapshot(): void {
+    schedulePersistViewState({
+      showList,
+      displayedMonth: formatDisplayedMonthForStorage(displayedMonth),
+      groupOpenState,
+      dayOpenState,
+      dayChildOpenState,
+    });
+  }
+
+  $: if (viewStateHydrated && $settings.rememberViewState && !didPersistViewStateOnEnable) {
+    didPersistViewStateOnEnable = true;
+    persistFullViewStateSnapshot();
+  }
+
+  $: if (viewStateHydrated && !$settings.rememberViewState) {
+    didPersistViewStateOnEnable = false;
+  }
+
   function updateListTogglePosition(): void {
     if (!calendarBaseWrapperEl || !listControlsEl) {
       return;
@@ -1745,6 +1877,43 @@
   }
 
   onMount(() => {
+    // Restore persisted state (if enabled) before any reactive persistence runs.
+    try {
+      const vs = readViewState();
+
+      if ($settings.rememberViewState && vs) {
+        if (vs.displayedMonth) {
+          const strict = window.moment(vs.displayedMonth, "YYYY-MM-DD", true);
+          if (strict?.isValid?.()) {
+            displayedMonth = strict;
+          } else {
+            const loose = window.moment(vs.displayedMonth);
+            if (loose?.isValid?.()) {
+              displayedMonth = loose;
+            }
+          }
+        }
+
+        if (vs.groupOpenState && typeof vs.groupOpenState === "object") {
+          groupOpenState = vs.groupOpenState;
+        }
+        if (vs.dayOpenState && typeof vs.dayOpenState === "object") {
+          dayOpenState = vs.dayOpenState;
+        }
+        if (vs.dayChildOpenState && typeof vs.dayChildOpenState === "object") {
+          dayChildOpenState = vs.dayChildOpenState;
+        }
+
+        if (vs.showList) {
+          openList();
+        }
+      }
+    } catch (err) {
+      console.error("[Calendar] Failed to restore view state", err);
+    } finally {
+      viewStateHydrated = true;
+    }
+
     const schedule = () => {
       // CalendarBase mounts inside this component; wait a frame so its DOM is ready.
       window.requestAnimationFrame(() => {
@@ -1857,6 +2026,9 @@
     clearInterval(heartbeat);
     if (listComputeTimer !== null) {
       window.clearTimeout(listComputeTimer);
+    }
+    if (viewStateSaveTimer !== null) {
+      window.clearTimeout(viewStateSaveTimer);
     }
   });
 </script>

@@ -10,6 +10,9 @@ import { sanitizeListItemColorTags } from "src/listItemColorTags";
 import type { OllamaTitleCache } from "src/ollama/cache";
 import { pruneOllamaTitleCache, sanitizeOllamaTitleCache } from "src/ollama/cache";
 
+import type { CalendarViewState } from "src/viewState";
+import { defaultViewState, sanitizeCalendarViewState } from "src/viewState";
+
 import { VIEW_TYPE_CALENDAR } from "./constants";
 import { customListTitles, listItemColorTags, ollamaTitleCache, settings } from "./ui/stores";
 import {
@@ -28,11 +31,12 @@ declare global {
   }
 }
 
-type PluginDataV2 = {
+type PluginDataV3 = {
   settings: ISettings;
   ollamaTitleCache: OllamaTitleCache;
   customListTitles: CustomListTitles;
   listItemColorTags: ListItemColorTags;
+  viewState: CalendarViewState;
 };
 
 export default class CalendarPlugin extends Plugin {
@@ -41,11 +45,12 @@ export default class CalendarPlugin extends Plugin {
 
   private isLoadingData = false;
   private saveDataTimer: number | null = null;
-  private data: PluginDataV2 = {
+  private data: PluginDataV3 = {
     settings: { ...defaultSettings } as ISettings,
     ollamaTitleCache: {},
     customListTitles: {},
     listItemColorTags: {},
+    viewState: { ...defaultViewState },
   };
 
   onunload(): void {
@@ -174,12 +179,17 @@ export default class CalendarPlugin extends Plugin {
       ollamaTitleCache.set(prunedCache);
     }
 
+    const viewStateToSave = this.options?.rememberViewState
+      ? this.data.viewState
+      : defaultViewState;
+
     await this.saveData({
       settings: this.options,
       ollamaTitleCache: prunedCache,
       customListTitles: this.data.customListTitles,
       listItemColorTags: this.data.listItemColorTags,
-    } as PluginDataV2);
+      viewState: viewStateToSave,
+    } as PluginDataV3);
   }
 
   public async clearGeneratedTitles(): Promise<void> {
@@ -212,6 +222,9 @@ export default class CalendarPlugin extends Plugin {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const listItemColorTagsData = isV2 ? (raw as any).listItemColorTags : undefined;
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const viewStateData = isV2 ? (raw as any).viewState : undefined;
+
     const mergedSettings = {
       ...defaultSettings,
       ...(settingsData || {}),
@@ -233,10 +246,47 @@ export default class CalendarPlugin extends Plugin {
     );
     listItemColorTags.set(sanitizedListItemColorTags);
 
+    this.data = {
+      ...this.data,
+      viewState: sanitizeCalendarViewState(viewStateData),
+    };
+
     this.isLoadingData = false;
 
     // Write back immediately to migrate legacy data shape.
     await this.savePluginData();
+  }
+
+  /**
+   * Read the persisted UI state for the calendar view.
+   * This is used by the Svelte UI to restore the last session (when enabled).
+   */
+  public getViewState(): CalendarViewState {
+    const vs = this.data.viewState ?? defaultViewState;
+    return {
+      showList: !!vs.showList,
+      displayedMonth: vs.displayedMonth ?? null,
+      groupOpenState: { ...(vs.groupOpenState ?? {}) },
+      dayOpenState: { ...(vs.dayOpenState ?? {}) },
+      dayChildOpenState: { ...(vs.dayChildOpenState ?? {}) },
+    };
+  }
+
+  /**
+   * Update the persisted UI state.
+   * This is intentionally fire-and-forget; persistence is debounced by the plugin.
+   */
+  public updateViewState(partial: Partial<CalendarViewState>): void {
+    const merged = sanitizeCalendarViewState({
+      ...(this.data.viewState ?? defaultViewState),
+      ...(partial ?? {}),
+    });
+
+    this.data = { ...this.data, viewState: merged };
+
+    if (!this.isLoadingData && this.options?.rememberViewState) {
+      this.scheduleSaveData();
+    }
   }
 
   async writeOptions(

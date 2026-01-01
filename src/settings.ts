@@ -16,6 +16,9 @@ export interface ISettings {
   weekStart: IWeekStartOption;
   shouldConfirmBeforeCreate: boolean;
 
+  // UI state
+  rememberViewState: boolean;
+
   // List view settings
   listViewMinWords: number;
   listViewIncludeCreatedDays: boolean;
@@ -52,6 +55,9 @@ const weekdays = [
 export const defaultSettings = Object.freeze({
   shouldConfirmBeforeCreate: true,
   weekStart: "locale" as IWeekStartOption,
+
+  // Persist UI state across restarts (list view open, displayed month, list toggles)
+  rememberViewState: false,
 
   wordsPerDot: DEFAULT_WORDS_PER_DOT,
 
@@ -111,6 +117,7 @@ export class CalendarSettingsTab extends PluginSettingTab {
     this.addDotThresholdSetting();
     this.addWeekStartSetting();
     this.addConfirmCreateSetting();
+    this.addRememberViewStateSetting();
     this.addShowWeeklyNoteSetting();
 
     if (
@@ -188,6 +195,22 @@ export class CalendarSettingsTab extends PluginSettingTab {
         toggle.onChange(async (value) => {
           this.plugin.writeOptions(() => ({
             shouldConfirmBeforeCreate: value,
+          }));
+        });
+      });
+  }
+
+  addRememberViewStateSetting(): void {
+    new Setting(this.containerEl)
+      .setName("Remember view state")
+      .setDesc(
+        "Restore the calendar UI across restarts (e.g., displayed month, list view open state, and list toggles)."
+      )
+      .addToggle((toggle) => {
+        toggle.setValue(this.plugin.options.rememberViewState);
+        toggle.onChange(async (value) => {
+          this.plugin.writeOptions(() => ({
+            rememberViewState: value,
           }));
         });
       });

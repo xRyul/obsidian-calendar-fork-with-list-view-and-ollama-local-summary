@@ -8,6 +8,7 @@ export function getDefaultSettings(
     {
       weekStart: "sunday",
       shouldConfirmBeforeCreate: false,
+      rememberViewState: false,
       wordsPerDot: 50,
 
       listViewMinWords: 0,
