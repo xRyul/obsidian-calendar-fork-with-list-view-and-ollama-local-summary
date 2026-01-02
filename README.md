@@ -1,4 +1,4 @@
-# Daily Note Calendar
+# Calendar for Daily Notes
 Calendar for daily notes with grouped lists view, created-on-day notes and attachments, color tags, custom titles, and optional gemma3 title generation.  
 
 ![Obsidian_NGf9Of9P0m](https://github.com/user-attachments/assets/2a644979-e9d7-40d7-983a-504801d79875)

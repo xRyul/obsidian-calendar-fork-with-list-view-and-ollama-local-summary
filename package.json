@@ -1,5 +1,5 @@
 {
-  "name": "daily-note-calendar",
+  "name": "calendar-for-daily-notes",
   "version": "2.0.5",
   "description": "Calendar for daily notes with grouped lists, created-on-day notes and attachments, color tags, custom titles, and optional gemma3 title generation.",
   "author": "xRyul",
