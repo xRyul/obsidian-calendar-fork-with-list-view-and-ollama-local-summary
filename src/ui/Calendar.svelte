@@ -55,6 +55,7 @@
   } from "src/customListTitles";
 
   import type { ISettings } from "src/settings";
+  import { defaultViewState } from "src/viewState";
   import type { CalendarViewState } from "src/viewState";
   import {
     activeFile,
@@ -1972,6 +1973,9 @@
         if (vs.showList) {
           openList();
         }
+      } else if (defaultViewState.showList) {
+        // When persistence is disabled, still use the default open state.
+        openList();
       }
     } catch (err) {
       console.error("[Calendar] Failed to restore view state", err);

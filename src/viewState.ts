@@ -28,7 +28,7 @@ export type CalendarViewState = {
 };
 
 export const defaultViewState: CalendarViewState = {
-  showList: false,
+  showList: true,
   displayedMonth: null,
   groupOpenState: {},
   dayOpenState: {},
@@ -78,7 +78,8 @@ export function sanitizeCalendarViewState(raw: unknown): CalendarViewState {
   const MAX_GROUP_KEYS = 20_000;
   const MAX_DAY_KEYS = 50_000;
 
-  const showList = typeof raw.showList === "boolean" ? raw.showList : false;
+  const showList =
+    typeof raw.showList === "boolean" ? raw.showList : defaultViewState.showList;
 
   const displayedMonth =
     typeof raw.displayedMonth === "string" && raw.displayedMonth.trim()

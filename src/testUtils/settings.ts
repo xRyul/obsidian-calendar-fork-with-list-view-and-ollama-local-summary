@@ -8,7 +8,7 @@ export function getDefaultSettings(
     {
       weekStart: "sunday",
       shouldConfirmBeforeCreate: false,
-      rememberViewState: false,
+      rememberViewState: true,
       calendarZoom: 130,
       listViewZoom: 95,
       wordsPerDot: 50,

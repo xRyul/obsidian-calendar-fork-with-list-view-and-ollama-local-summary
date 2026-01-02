@@ -62,7 +62,7 @@ export const defaultSettings = Object.freeze({
   weekStart: "locale" as IWeekStartOption,
 
   // Persist UI state across restarts (list view open, displayed month, list toggles)
-  rememberViewState: false,
+  rememberViewState: true,
 
   // UI sizing (100 = 100%, 80 = 80%, etc.)
   calendarZoom: 130,
