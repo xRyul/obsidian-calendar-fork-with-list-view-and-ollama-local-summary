@@ -1656,7 +1656,7 @@
 
       const leaf = isMetaPressed
         ? workspace.getLeaf(true)
-        : workspace.getUnpinnedLeaf();
+        : workspace.getLeaf(false);
       await leaf.openFile(file, { active: true });
       workspace.setActiveLeaf(leaf, true, true);
     } catch (err) {

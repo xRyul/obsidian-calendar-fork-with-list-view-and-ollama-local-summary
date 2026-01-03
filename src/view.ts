@@ -495,7 +495,7 @@ export default class CalendarView extends ItemView {
 
     const leaf = inNewSplit
       ? workspace.getLeaf(true)
-      : workspace.getUnpinnedLeaf();
+      : workspace.getLeaf(false);
     await leaf.openFile(existingFile);
 
     activeFile.setFile(existingFile);
@@ -533,7 +533,7 @@ export default class CalendarView extends ItemView {
     const mode = (this.app.vault as any).getConfig("defaultViewMode");
     const leaf = inNewSplit
       ? workspace.getLeaf(true)
-      : workspace.getUnpinnedLeaf();
+      : workspace.getLeaf(false);
     await leaf.openFile(existingFile, { active: true, state: { mode } });
 
     activeFile.setFile(existingFile);
