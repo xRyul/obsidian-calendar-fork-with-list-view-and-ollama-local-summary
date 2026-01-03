@@ -1,5 +1,6 @@
-import type { Moment } from "moment";
-import type { TFile } from "obsidian";
+import type { TFile, moment } from "obsidian";
+
+type Moment = moment.Moment;
 
 export type ListViewGroupingPreset =
   | "year"

@@ -1,4 +1,4 @@
-import type { Moment } from "moment";
+import type { moment } from "obsidian";
 import type { ICalendarSource } from "obsidian-calendar-ui";
 import {
   getDailyNote,
@@ -34,6 +34,8 @@ import {
   tasksSource,
   wordCountSource,
 } from "./ui/sources";
+
+type Moment = moment.Moment;
 
 function isPerfDebugEnabled(): boolean {
   try {
@@ -466,7 +468,13 @@ export default class CalendarView extends ItemView {
     }
   }
 
-  async openOrCreateWeeklyNote(
+  openOrCreateWeeklyNote(date: Moment, inNewSplit: boolean): void {
+    void this.openOrCreateWeeklyNoteAsync(date, inNewSplit).catch((err) =>
+      console.error("[Calendar] Failed to open or create weekly note", err)
+    );
+  }
+
+  private async openOrCreateWeeklyNoteAsync(
     date: Moment,
     inNewSplit: boolean
   ): Promise<void> {
@@ -478,7 +486,7 @@ export default class CalendarView extends ItemView {
 
     if (!existingFile) {
       // File doesn't exist
-      tryToCreateWeeklyNote(startOfWeek, inNewSplit, this.settings, (file) => {
+      await tryToCreateWeeklyNote(startOfWeek, inNewSplit, this.settings, (file) => {
         activeFile.setFile(file);
         activeFilePath.setFile(file);
       });
@@ -492,10 +500,16 @@ export default class CalendarView extends ItemView {
 
     activeFile.setFile(existingFile);
     activeFilePath.setFile(existingFile);
-    workspace.setActiveLeaf(leaf, true, true)
+    workspace.setActiveLeaf(leaf, true, true);
   }
 
-  async openOrCreateDailyNote(
+  openOrCreateDailyNote(date: Moment, inNewSplit: boolean): void {
+    void this.openOrCreateDailyNoteAsync(date, inNewSplit).catch((err) =>
+      console.error("[Calendar] Failed to open or create daily note", err)
+    );
+  }
+
+  private async openOrCreateDailyNoteAsync(
     date: Moment,
     inNewSplit: boolean
   ): Promise<void> {
@@ -503,7 +517,7 @@ export default class CalendarView extends ItemView {
     const existingFile = getDailyNote(date, get(dailyNotes));
     if (!existingFile) {
       // File doesn't exist
-      tryToCreateDailyNote(
+      await tryToCreateDailyNote(
         date,
         inNewSplit,
         this.settings,

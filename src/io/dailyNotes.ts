@@ -1,5 +1,4 @@
-import type { Moment } from "moment";
-import type { TFile } from "obsidian";
+import type { TFile, moment } from "obsidian";
 import {
   createDailyNote,
   getDailyNoteSettings,
@@ -12,7 +11,7 @@ import { createConfirmationDialog } from "src/ui/modal";
  * Create a Daily Note for a given date.
  */
 export async function tryToCreateDailyNote(
-  date: Moment,
+  date: moment.Moment,
   inNewSplit: boolean,
   settings: ISettings,
   cb?: (newFile: TFile) => void
@@ -36,7 +35,7 @@ export async function tryToCreateDailyNote(
       cta: "Create",
       onAccept: createFile,
       text: `File ${filename} does not exist. Would you like to create it?`,
-      title: "New Daily Note",
+      title: "New daily note",
     });
   } else {
     await createFile();

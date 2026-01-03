@@ -1,17 +1,120 @@
-import moment from "moment";
-import type { TFile } from "obsidian";
+import type { TFile, moment } from "obsidian";
 
 import { buildListGroups, buildListItems } from "./listViewModel";
 import type { ListItem } from "./listViewModel";
 
+type Moment = moment.Moment;
+
+type MomentFactory = {
+  (dateStr: string, format: "YYYY-MM-DD", strict: true): Moment;
+  locale: (locale: string) => void;
+};
+
+const momentStub: MomentFactory = (() => {
+  let currentLocale = "en";
+
+  const pad2 = (n: number): string => String(n).padStart(2, "0");
+
+  const parseYMD = (
+    dateStr: string,
+    strict: boolean
+  ): { valid: boolean; date: Date } => {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr);
+    if (!m) {
+      return { valid: false, date: new Date(NaN) };
+    }
+
+    const y = Number(m[1]);
+    const mo = Number(m[2]);
+    const d = Number(m[3]);
+
+    if (!Number.isFinite(y) || !Number.isFinite(mo) || !Number.isFinite(d)) {
+      return { valid: false, date: new Date(NaN) };
+    }
+
+    // Create date at UTC midnight to avoid local timezone shifting.
+    const dt = new Date(Date.UTC(y, mo - 1, d));
+
+    // Strictly validate that the parsed date matches the input (e.g., reject 2025-02-30).
+    const valid =
+      dt.getUTCFullYear() === y &&
+      dt.getUTCMonth() === mo - 1 &&
+      dt.getUTCDate() === d;
+
+    return { valid: strict ? valid : true, date: dt };
+  };
+
+  const getISOWeekYear = (date: Date): number => {
+    const d = new Date(date.getTime());
+    const day = (d.getUTCDay() + 6) % 7; // Mon=0..Sun=6
+    d.setUTCDate(d.getUTCDate() - day + 3); // Thu
+    return d.getUTCFullYear();
+  };
+
+  const getISOWeek = (date: Date): number => {
+    const d = new Date(date.getTime());
+    const day = (d.getUTCDay() + 6) % 7; // Mon=0..Sun=6
+    d.setUTCDate(d.getUTCDate() - day + 3); // Thu in the target week
+    const isoYear = d.getUTCFullYear();
+
+    const firstThursday = new Date(Date.UTC(isoYear, 0, 4));
+    const firstDay = (firstThursday.getUTCDay() + 6) % 7;
+    firstThursday.setUTCDate(firstThursday.getUTCDate() - firstDay + 3);
+
+    return 1 + Math.floor((d.getTime() - firstThursday.getTime()) / 604800000);
+  };
+
+  const formatMonthName = (date: Date): string => {
+    return new Intl.DateTimeFormat(currentLocale, {
+      month: "long",
+      timeZone: "UTC",
+    }).format(date);
+  };
+
+  const factory = ((dateStr: string, _format: "YYYY-MM-DD", strict: true) => {
+    const { date, valid } = parseYMD(dateStr, strict);
+
+    const impl = {
+      isValid: () => valid,
+      format: (fmt: string) => {
+        switch (fmt) {
+          case "YYYY-MM-DD":
+            return `${date.getUTCFullYear()}-${pad2(
+              date.getUTCMonth() + 1
+            )}-${pad2(date.getUTCDate())}`;
+          case "MMMM":
+            return formatMonthName(date);
+          default:
+            throw new Error(`Unsupported format: ${fmt}`);
+        }
+      },
+      valueOf: () => date.getTime(),
+      year: () => date.getUTCFullYear(),
+      month: () => date.getUTCMonth(),
+      quarter: () => Math.floor(date.getUTCMonth() / 3) + 1,
+      isoWeekYear: () => getISOWeekYear(date),
+      isoWeek: () => getISOWeek(date),
+    };
+
+    return impl as unknown as Moment;
+  }) as unknown as MomentFactory;
+
+  factory.locale = (locale: string) => {
+    currentLocale = locale;
+  };
+
+  return factory;
+})();
+
 describe("ui/listViewModel", () => {
-  const parseDateStr = (dateStr: string) => moment(dateStr, "YYYY-MM-DD", true);
-  const getDayDateUID = (date: moment.Moment) => date.format("YYYY-MM-DD");
+  const parseDateStr = (dateStr: string) =>
+    momentStub(dateStr, "YYYY-MM-DD", true);
+  const getDayDateUID = (date: Moment) => date.format("YYYY-MM-DD");
 
   const mockFile = (path: string): TFile => ({ path } as unknown as TFile);
 
   const makeItem = (dateStr: string): ListItem => {
-    const date = moment(dateStr, "YYYY-MM-DD", true);
+    const date = momentStub(dateStr, "YYYY-MM-DD", true);
     return {
       date,
       dateUID: dateStr,
@@ -27,7 +130,7 @@ describe("ui/listViewModel", () => {
   };
 
   it("includes qualifying daily notes", () => {
-    const date = moment("2025-12-15", "YYYY-MM-DD", true);
+    const date = momentStub("2025-12-15", "YYYY-MM-DD", true);
 
     const items = buildListItems({
       dailyNoteCandidates: [
@@ -91,7 +194,7 @@ describe("ui/listViewModel", () => {
   });
 
   it("keeps the daily note filePath when the day is included via created items (prevents daily note appearing in created list)", () => {
-    const date = moment("2025-12-13", "YYYY-MM-DD", true);
+    const date = momentStub("2025-12-13", "YYYY-MM-DD", true);
 
     const items = buildListItems({
       dailyNoteCandidates: [
@@ -122,7 +225,7 @@ describe("ui/listViewModel", () => {
   });
 
   it("excludes non-qualifying daily notes when there are no created items", () => {
-    const date = moment("2025-12-12", "YYYY-MM-DD", true);
+    const date = momentStub("2025-12-12", "YYYY-MM-DD", true);
 
     const items = buildListItems({
       dailyNoteCandidates: [
@@ -149,7 +252,7 @@ describe("ui/listViewModel", () => {
 
   describe("buildListGroups", () => {
     beforeEach(() => {
-      moment.locale("en");
+      momentStub.locale("en");
     });
 
     it("groups by year (current behavior)", () => {
@@ -207,7 +310,7 @@ describe("ui/listViewModel", () => {
     });
 
     it("nests quarter groups under year (year_quarter)", () => {
-      const d1 = moment("2025-12-15", "YYYY-MM-DD", true);
+      const d1 = momentStub("2025-12-15", "YYYY-MM-DD", true);
       const q1 = `Q${d1.quarter()}`;
 
       const items = [makeItem("2025-12-15")];
@@ -224,7 +327,7 @@ describe("ui/listViewModel", () => {
     });
 
     it("groups by ISO year → ISO week (year_week)", () => {
-      const d = moment("2025-12-15", "YYYY-MM-DD", true);
+      const d = momentStub("2025-12-15", "YYYY-MM-DD", true);
       const isoYear = String(d.isoWeekYear());
       const week = String(d.isoWeek()).padStart(2, "0");
 

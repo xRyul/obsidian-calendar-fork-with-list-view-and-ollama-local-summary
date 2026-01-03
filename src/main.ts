@@ -1,5 +1,5 @@
-import type { Moment, WeekSpec } from "moment";
-import { App, Plugin, WorkspaceLeaf, addIcon } from "obsidian";
+import { addIcon, Plugin, type App, type WorkspaceLeaf } from "obsidian";
+import type { moment } from "obsidian";
 
 import type { CustomListTitles } from "src/customListTitles";
 import { sanitizeCustomListTitles } from "src/customListTitles";
@@ -27,10 +27,22 @@ import {
   LIST_ITEM_TAG_COLORS,
 } from "./ui/listItemColorTagMenu";
 
+type WeekSpec = {
+  dow: number;
+  doy?: number;
+};
+
+type MomentStatic = ((...args: unknown[]) => moment.Moment) & {
+  locale: (...args: unknown[]) => string;
+  locales: (...args: unknown[]) => string[];
+  weekdays: (...args: unknown[]) => string[];
+  updateLocale: (...args: unknown[]) => unknown;
+};
+
 declare global {
   interface Window {
     app: App;
-    moment: () => Moment;
+    moment: MomentStatic;
     _bundledLocaleWeekSpec: WeekSpec;
   }
 }
@@ -133,7 +145,7 @@ export default class CalendarPlugin extends Plugin {
 
     this.addCommand({
       id: "open-weekly-note",
-      name: "Open Weekly Note",
+      name: "Open weekly note",
       checkCallback: (checking) => {
         if (checking) {
           return !appHasPeriodicNotesPluginLoaded();
@@ -163,9 +175,13 @@ export default class CalendarPlugin extends Plugin {
     if (this.app.workspace.getLeavesOfType(VIEW_TYPE_CALENDAR).length) {
       return;
     }
-    this.app.workspace.getRightLeaf(false).setViewState({
-      type: VIEW_TYPE_CALENDAR,
-    });
+
+    void this.app.workspace
+      .getRightLeaf(false)
+      .setViewState({
+        type: VIEW_TYPE_CALENDAR,
+      })
+      .catch((err) => console.error("[Calendar] Failed to open calendar view", err));
   }
 
   private scheduleSaveData(): void {

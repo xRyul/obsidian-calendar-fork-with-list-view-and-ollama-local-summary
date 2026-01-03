@@ -122,7 +122,7 @@ export class CalendarSettingsTab extends PluginSettingTab {
     }
 
     this.containerEl.createEl("h3", {
-      text: "General Settings",
+      text: "General settings",
     });
     this.addDotThresholdSetting();
     this.addWeekStartSetting();
@@ -131,7 +131,7 @@ export class CalendarSettingsTab extends PluginSettingTab {
     this.addShowWeeklyNoteSetting();
 
     this.containerEl.createEl("h3", {
-      text: "UI Sizing",
+      text: "UI sizing",
     });
     this.addCalendarZoomSetting();
     this.addListViewZoomSetting();
@@ -141,12 +141,12 @@ export class CalendarSettingsTab extends PluginSettingTab {
       !appHasPeriodicNotesPluginLoaded()
     ) {
       this.containerEl.createEl("h3", {
-        text: "Weekly Note Settings",
+        text: "Weekly note settings",
       });
       this.containerEl.createEl("p", {
         cls: "setting-item-description",
         text:
-          "Note: Weekly Note settings are moving. You are encouraged to install the 'Periodic Notes' plugin to keep the functionality in the future.",
+          "Note: Weekly note settings are moving. You are encouraged to install the 'Periodic Notes' plugin to keep the functionality in the future.",
       });
       this.addWeeklyNoteFormatSetting();
       this.addWeeklyNoteTemplateSetting();
@@ -154,7 +154,7 @@ export class CalendarSettingsTab extends PluginSettingTab {
     }
 
     this.containerEl.createEl("h3", {
-      text: "Advanced Settings",
+      text: "Advanced settings",
     });
     this.addLocaleOverrideSetting();
 
@@ -168,10 +168,14 @@ export class CalendarSettingsTab extends PluginSettingTab {
         textfield.setPlaceholder(String(DEFAULT_WORDS_PER_DOT));
         textfield.inputEl.type = "number";
         textfield.setValue(String(this.plugin.options.wordsPerDot));
-        textfield.onChange(async (value) => {
-          this.plugin.writeOptions(() => ({
-            wordsPerDot: value !== "" ? Number(value) : undefined,
-          }));
+        textfield.onChange((value) => {
+          void this.plugin
+            .writeOptions(() => ({
+              wordsPerDot: value !== "" ? Number(value) : undefined,
+            }))
+            .catch((err) =>
+              console.error("[Calendar] Failed to update words per dot", err)
+            );
         });
       });
   }
@@ -194,10 +198,14 @@ export class CalendarSettingsTab extends PluginSettingTab {
           dropdown.addOption(weekdays[i], day);
         });
         dropdown.setValue(this.plugin.options.weekStart);
-        dropdown.onChange(async (value) => {
-          this.plugin.writeOptions(() => ({
-            weekStart: value as IWeekStartOption,
-          }));
+        dropdown.onChange((value) => {
+          void this.plugin
+            .writeOptions(() => ({
+              weekStart: value as IWeekStartOption,
+            }))
+            .catch((err) =>
+              console.error("[Calendar] Failed to update week start", err)
+            );
         });
       });
   }
@@ -208,10 +216,17 @@ export class CalendarSettingsTab extends PluginSettingTab {
       .setDesc("Show a confirmation modal before creating a new note")
       .addToggle((toggle) => {
         toggle.setValue(this.plugin.options.shouldConfirmBeforeCreate);
-        toggle.onChange(async (value) => {
-          this.plugin.writeOptions(() => ({
-            shouldConfirmBeforeCreate: value,
-          }));
+        toggle.onChange((value) => {
+          void this.plugin
+            .writeOptions(() => ({
+              shouldConfirmBeforeCreate: value,
+            }))
+            .catch((err) =>
+              console.error(
+                "[Calendar] Failed to update confirm-before-create setting",
+                err
+              )
+            );
         });
       });
   }
@@ -224,10 +239,14 @@ export class CalendarSettingsTab extends PluginSettingTab {
       )
       .addToggle((toggle) => {
         toggle.setValue(this.plugin.options.rememberViewState);
-        toggle.onChange(async (value) => {
-          this.plugin.writeOptions(() => ({
-            rememberViewState: value,
-          }));
+        toggle.onChange((value) => {
+          void this.plugin
+            .writeOptions(() => ({
+              rememberViewState: value,
+            }))
+            .catch((err) =>
+              console.error("[Calendar] Failed to update view state persistence", err)
+            );
         });
       });
   }
@@ -238,8 +257,12 @@ export class CalendarSettingsTab extends PluginSettingTab {
       .setDesc("Enable this to add a column with the week number")
       .addToggle((toggle) => {
         toggle.setValue(this.plugin.options.showWeeklyNote);
-        toggle.onChange(async (value) => {
-          this.plugin.writeOptions(() => ({ showWeeklyNote: value }));
+        toggle.onChange((value) => {
+          void this.plugin
+            .writeOptions(() => ({ showWeeklyNote: value }))
+            .catch((err) =>
+              console.error("[Calendar] Failed to update show week number setting", err)
+            );
           this.display(); // show/hide weekly settings
         });
       });
@@ -252,8 +275,12 @@ export class CalendarSettingsTab extends PluginSettingTab {
       .addText((textfield) => {
         textfield.setValue(this.plugin.options.weeklyNoteFormat);
         textfield.setPlaceholder(DEFAULT_WEEK_FORMAT);
-        textfield.onChange(async (value) => {
-          this.plugin.writeOptions(() => ({ weeklyNoteFormat: value }));
+        textfield.onChange((value) => {
+          void this.plugin
+            .writeOptions(() => ({ weeklyNoteFormat: value }))
+            .catch((err) =>
+              console.error("[Calendar] Failed to update weekly note format", err)
+            );
         });
       });
   }
@@ -266,8 +293,12 @@ export class CalendarSettingsTab extends PluginSettingTab {
       )
       .addText((textfield) => {
         textfield.setValue(this.plugin.options.weeklyNoteTemplate);
-        textfield.onChange(async (value) => {
-          this.plugin.writeOptions(() => ({ weeklyNoteTemplate: value }));
+        textfield.onChange((value) => {
+          void this.plugin
+            .writeOptions(() => ({ weeklyNoteTemplate: value }))
+            .catch((err) =>
+              console.error("[Calendar] Failed to update weekly note template", err)
+            );
         });
       });
   }
@@ -278,8 +309,12 @@ export class CalendarSettingsTab extends PluginSettingTab {
       .setDesc("New weekly notes will be placed here")
       .addText((textfield) => {
         textfield.setValue(this.plugin.options.weeklyNoteFolder);
-        textfield.onChange(async (value) => {
-          this.plugin.writeOptions(() => ({ weeklyNoteFolder: value }));
+        textfield.onChange((value) => {
+          void this.plugin
+            .writeOptions(() => ({ weeklyNoteFolder: value }))
+            .catch((err) =>
+              console.error("[Calendar] Failed to update weekly note folder", err)
+            );
         });
       });
   }
@@ -293,8 +328,12 @@ export class CalendarSettingsTab extends PluginSettingTab {
           .setLimits(50, 200, 5)
           .setValue(this.plugin.options.calendarZoom)
           .setDynamicTooltip()
-          .onChange(async (value) => {
-            this.plugin.writeOptions(() => ({ calendarZoom: value }));
+          .onChange((value) => {
+            void this.plugin
+              .writeOptions(() => ({ calendarZoom: value }))
+              .catch((err) =>
+                console.error("[Calendar] Failed to update calendar zoom", err)
+              );
           });
       });
   }
@@ -308,8 +347,12 @@ export class CalendarSettingsTab extends PluginSettingTab {
           .setLimits(50, 200, 5)
           .setValue(this.plugin.options.listViewZoom)
           .setDynamicTooltip()
-          .onChange(async (value) => {
-            this.plugin.writeOptions(() => ({ listViewZoom: value }));
+          .onChange((value) => {
+            void this.plugin
+              .writeOptions(() => ({ listViewZoom: value }))
+              .catch((err) =>
+                console.error("[Calendar] Failed to update list view zoom", err)
+              );
           });
       });
   }
@@ -330,10 +373,14 @@ export class CalendarSettingsTab extends PluginSettingTab {
           dropdown.addOption(locale, locale);
         });
         dropdown.setValue(this.plugin.options.localeOverride);
-        dropdown.onChange(async (value) => {
-          this.plugin.writeOptions(() => ({
-            localeOverride: value as ILocaleOverride,
-          }));
+        dropdown.onChange((value) => {
+          void this.plugin
+            .writeOptions(() => ({
+              localeOverride: value as ILocaleOverride,
+            }))
+            .catch((err) =>
+              console.error("[Calendar] Failed to update locale override", err)
+            );
         });
       });
   }

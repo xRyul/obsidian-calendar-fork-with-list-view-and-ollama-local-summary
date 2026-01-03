@@ -58,7 +58,7 @@ function withTimeout<T>(
       }, timeoutMs);
 
       // If the main promise resolves/rejects first, clear the timer.
-      promise.finally(() => clearTimeout(timer));
+      void promise.finally(() => clearTimeout(timer)).catch(() => undefined);
     }),
   ]);
 }

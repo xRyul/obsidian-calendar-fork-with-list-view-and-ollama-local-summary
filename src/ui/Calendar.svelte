@@ -1,7 +1,6 @@
 <svelte:options immutable />
 
 <script lang="ts">
-  import type { Moment } from "moment";
   import {
     Calendar as CalendarBase,
     configureGlobalMomentLocale,
@@ -69,6 +68,8 @@
   } from "./stores";
   import { getWordCount as getWordCountFromFile } from "./noteMetrics";
 
+  type Moment = ReturnType<Window["moment"]>;
+
   let today: Moment;
 
   $: today = getToday($settings);
@@ -94,6 +95,8 @@
 
   let calendarZoomScale = 1;
   let listViewZoomScale = 1;
+
+  let calendarFinalZoom = 1;
 
   function normalizeZoomPercent(raw: unknown, fallback: number): number {
     const n = typeof raw === "number" ? raw : Number(raw);
@@ -620,7 +623,7 @@
   const CALENDAR_SCALE_MIN = CALENDAR_SCALE_MIN_WIDTH_PX / CALENDAR_SCALE_FULL_WIDTH_PX;
 
   function updateCalendarScale(): void {
-    if (!calendarBaseWrapperEl || !calendarZoomEl) {
+    if (!calendarBaseWrapperEl) {
       return;
     }
 
@@ -632,9 +635,10 @@
     // Base responsive fit-to-width scale (<= 1). This keeps all 7 columns visible
     // in narrow panes by default, but can be overridden by the user zoom setting.
     const fitScale = width / CALENDAR_SCALE_FULL_WIDTH_PX;
-    const responsiveScale = width < CALENDAR_SCALE_FULL_WIDTH_PX
-      ? Math.max(CALENDAR_SCALE_MIN, Math.min(1, fitScale))
-      : 1;
+    const responsiveScale =
+      width < CALENDAR_SCALE_FULL_WIDTH_PX
+        ? Math.max(CALENDAR_SCALE_MIN, Math.min(1, fitScale))
+        : 1;
 
     // User zoom is applied on top of the responsive scale.
     // Example: if responsiveScale is 0.70 in a narrow sidebar, and the user sets 200%,
@@ -642,14 +646,11 @@
     const finalScale = responsiveScale * calendarZoomScale;
 
     // Round a little to avoid thrashing on sub-pixel changes.
-    const rounded = Math.round(finalScale * 1000) / 1000;
-
-    // Use `zoom` (supported in Obsidian/Electron) so layout metrics + pointer events behave.
-    calendarZoomEl.style.setProperty("zoom", String(rounded));
+    calendarFinalZoom = Math.round(finalScale * 1000) / 1000;
   }
 
   // Ensure zoom updates when settings change (not just on resize observers).
-  $: if (calendarBaseWrapperEl && calendarZoomEl) {
+  $: if (calendarBaseWrapperEl) {
     // Make zoom reactive to the user setting.
     // (Svelte tracks dependencies by variable access, not by what a function reads.)
     calendarZoomScale;
@@ -2105,7 +2106,7 @@
 <div class="calendar-view">
   <div class="calendar-pane">
     <div class="calendar-base-wrapper" bind:this={calendarBaseWrapperEl}>
-      <div class="calendar-ui-zoom" bind:this={calendarZoomEl}>
+      <div class="calendar-ui-zoom" bind:this={calendarZoomEl} style={`zoom: ${calendarFinalZoom};`}>
         <CalendarBase
           {sources}
           {today}
@@ -2207,7 +2208,7 @@
                     Grouping
                     <span
                       class="calendar-tip"
-                      data-calendar-tooltip="Choose how list items are grouped (e.g., Year → Month)."
+                      data-calendar-tooltip="Choose how list items are grouped (e.g., Year → month)."
                       tabindex="0"
                       on:mouseenter={onTipEnter}
                       on:mouseleave={onTipLeave}
@@ -2224,11 +2225,11 @@
                       on:input={onChangeListViewGroupingPreset}
                     >
                       <option value="year">Year (YYYY)</option>
-                      <option value="year_month">Year → Month (YYYY/MM)</option>
-                      <option value="year_month_name">Year → Month Name (YYYY/MMMM)</option>
-                      <option value="year_month_num_name">Year → Month # - Name (YYYY/MM-MMMM)</option>
-                      <option value="year_quarter">Year → Quarter (YYYY/Q#)</option>
-                      <option value="year_week">ISO Year → ISO Week (GGGG/WW)</option>
+                      <option value="year_month">Year → month (YYYY/MM)</option>
+                      <option value="year_month_name">Year → month name (YYYY/MMMM)</option>
+                      <option value="year_month_num_name">Year → month # - name (YYYY/MM-MMMM)</option>
+                      <option value="year_quarter">Year → quarter (YYYY/Q#)</option>
+                      <option value="year_week">ISO year → ISO week (GGGG/WW)</option>
                     </select>
 
                     <span class="calendar-select-chevron" aria-hidden="true">
@@ -2266,8 +2267,8 @@
                       value={normalizeListViewSortOrder($settings.listViewSortOrder)}
                       on:input={onChangeListViewSortOrder}
                     >
-                      <option value="desc">Newest → Oldest</option>
-                      <option value="asc">Oldest → Newest</option>
+                      <option value="desc">Newest → oldest</option>
+                      <option value="asc">Oldest → newest</option>
                     </select>
 
                     <span class="calendar-select-chevron" aria-hidden="true">

@@ -1,5 +1,4 @@
-import type { Moment } from "moment";
-import type { TFile } from "obsidian";
+import type { TFile, moment } from "obsidian";
 import {
   createWeeklyNote,
   getWeeklyNoteSettings,
@@ -12,7 +11,7 @@ import { createConfirmationDialog } from "src/ui/modal";
  * Create a Weekly Note for a given date.
  */
 export async function tryToCreateWeeklyNote(
-  date: Moment,
+  date: moment.Moment,
   inNewSplit: boolean,
   settings: ISettings,
   cb?: (file: TFile) => void
@@ -36,7 +35,7 @@ export async function tryToCreateWeeklyNote(
       cta: "Create",
       onAccept: createFile,
       text: `File ${filename} does not exist. Would you like to create it?`,
-      title: "New Weekly Note",
+      title: "New weekly note",
     });
   } else {
     await createFile();

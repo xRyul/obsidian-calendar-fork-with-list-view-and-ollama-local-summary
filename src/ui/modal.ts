@@ -27,9 +27,15 @@ export class ConfirmationModal extends Modal {
           cls: "mod-cta",
           text: cta,
         })
-        .addEventListener("click", async (e) => {
-          await onAccept(e);
-          this.close();
+        .addEventListener("click", (e) => {
+          void onAccept(e).then(
+            () => {
+              this.close();
+            },
+            (err) => {
+              console.error("[Calendar] Confirmation action failed", err);
+            }
+          );
         });
     });
   }

@@ -1,5 +1,4 @@
-import type { Moment } from "moment";
-import type { TFile } from "obsidian";
+import type { TFile, moment } from "obsidian";
 import type { ICalendarSource, IDayMetadata } from "obsidian-calendar-ui";
 import { getDailyNote, getWeeklyNote } from "obsidian-daily-notes-interface";
 import { get } from "svelte/store";
@@ -14,7 +13,7 @@ const getStreakClasses = (file: TFile): string[] => {
 };
 
 export const streakSource: ICalendarSource = {
-  getDailyMetadata: async (date: Moment): Promise<IDayMetadata> => {
+  getDailyMetadata: async (date: moment.Moment): Promise<IDayMetadata> => {
     const file = getDailyNote(date, get(dailyNotes));
     return {
       classes: getStreakClasses(file),
@@ -22,7 +21,7 @@ export const streakSource: ICalendarSource = {
     };
   },
 
-  getWeeklyMetadata: async (date: Moment): Promise<IDayMetadata> => {
+  getWeeklyMetadata: async (date: moment.Moment): Promise<IDayMetadata> => {
     const file = getWeeklyNote(date, get(weeklyNotes));
     return {
       classes: getStreakClasses(file),

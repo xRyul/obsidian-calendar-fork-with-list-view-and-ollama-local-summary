@@ -1,5 +1,4 @@
-import type { Moment } from "moment";
-import { parseFrontMatterTags, TFile } from "obsidian";
+import { parseFrontMatterTags, TFile, type moment } from "obsidian";
 import type { ICalendarSource, IDayMetadata } from "obsidian-calendar-ui";
 import { getDailyNote, getWeeklyNote } from "obsidian-daily-notes-interface";
 import { get } from "svelte/store";
@@ -48,14 +47,14 @@ function getFormattedTagAttributes(note: TFile | null): Record<string, string> {
 }
 
 export const customTagsSource: ICalendarSource = {
-  getDailyMetadata: async (date: Moment): Promise<IDayMetadata> => {
+  getDailyMetadata: async (date: moment.Moment): Promise<IDayMetadata> => {
     const file = getDailyNote(date, get(dailyNotes));
     return {
       dataAttributes: getFormattedTagAttributes(file),
       dots: [],
     };
   },
-  getWeeklyMetadata: async (date: Moment): Promise<IDayMetadata> => {
+  getWeeklyMetadata: async (date: moment.Moment): Promise<IDayMetadata> => {
     const file = getWeeklyNote(date, get(weeklyNotes));
     return {
       dataAttributes: getFormattedTagAttributes(file),
