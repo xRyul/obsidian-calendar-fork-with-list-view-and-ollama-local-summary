@@ -81,7 +81,7 @@ export default defineConfig([
     },
     rules: {
       // Obsidian runtime classes like TFile don't exist in unit tests; casting is often unavoidable.
-      "obsidianmd/no-tfile-tfolder-cast": "off",
+      // "obsidianmd/no-tfile-tfolder-cast": "off",
     },
   },
 ]);

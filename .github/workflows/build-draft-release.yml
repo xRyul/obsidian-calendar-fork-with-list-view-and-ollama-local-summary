@@ -1,0 +1,109 @@
+# build-draft-release.yml
+#
+# Triggered by pushing a version tag (e.g. 2.1.1 or v2.1.1).
+# Builds the Obsidian plugin and creates a DRAFT GitHub release with:
+# - main.js
+# - manifest.json (with updated version)
+# - styles.css
+
+name: Build Draft Release
+
+on:
+  push:
+    tags:
+      - '*.*.*'
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: draft-release-${{ github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Derive release version from tag
+        run: |
+          TAG="${{ github.ref_name }}"
+          VERSION="${TAG#v}"
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+
+      - name: Update manifest version for release
+        run: |
+          node -e "
+          const fs = require('fs');
+          const version = process.env.VERSION;
+          const manifest = JSON.parse(fs.readFileSync('manifest.json', 'utf8'));
+          manifest.version = version;
+          fs.writeFileSync('manifest.json', JSON.stringify(manifest, null, 2) + '\n');
+          console.log('✅ Updated manifest.json to version ' + version + ' for release');
+          "
+
+      # NOTE: don't run `npm run build` here because your repo has a `postbuild`
+      # hook that deploys to a local vault. We call rollup directly instead.
+      - name: Lint
+        run: npm run lint
+
+      - name: Build plugin
+        run: npx rollup -c rollup.config.mjs
+
+      - name: Minify main.js with Terser
+        run: |
+          echo "📦 Original main.js size:"
+          ls -lh main.js
+
+          npx terser@latest main.js --compress --mangle --output main.min.js
+          mv main.min.js main.js
+
+          echo "✨ Minified main.js size:"
+          ls -lh main.js
+
+      - name: Verify release files exist
+        run: |
+          echo "🔍 Verifying release files..."
+
+          for file in main.js manifest.json styles.css; do
+            if [ ! -f "$file" ]; then
+              echo "❌ Missing required file: $file"
+              exit 1
+            fi
+            echo "✅ Found: $file ($(ls -lh $file | awk '{print $5}'))"
+          done
+
+          MANIFEST_VERSION=$(node -p "require('./manifest.json').version")
+          if [ "$MANIFEST_VERSION" != "$VERSION" ]; then
+            echo "❌ Manifest version ($MANIFEST_VERSION) doesn't match tag ($VERSION)"
+            exit 1
+          fi
+          echo "✅ Manifest version verified: $VERSION"
+
+      - name: Create draft release with assets
+        uses: softprops/action-gh-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          draft: true
+          name: ${{ env.VERSION }}
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            main.js
+            manifest.json
+            styles.css

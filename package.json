@@ -9,6 +9,7 @@
     "lint": "svelte-check && eslint src --ext .ts",
     "build": "npm run lint && rollup -c rollup.config.mjs",
     "postbuild": "node scripts/deploy-to-vault.js",
+    "pre-release": "node scripts/prepare-release.js",
     "test": "jest --passWithNoTests",
     "test:watch": "npm run test -- -- --watch"
   },
@@ -61,7 +62,16 @@
           "preprocess": true
         }
       ],
-      "^.+\\.ts$": "ts-jest"
+      "^.+\\.ts$": [
+        "ts-jest",
+        {
+          "tsconfig": {
+            "module": "commonjs",
+            "moduleResolution": "node",
+            "verbatimModuleSyntax": false
+          }
+        }
+      ]
     },
     "moduleFileExtensions": [
       "js",

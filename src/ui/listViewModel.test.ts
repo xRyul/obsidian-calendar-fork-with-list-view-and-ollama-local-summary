@@ -1,4 +1,4 @@
-import type { TFile, moment } from "obsidian";
+import type { TFile, Vault, moment } from "obsidian";
 
 import { buildListGroups, buildListItems } from "./listViewModel";
 import type { ListItem } from "./listViewModel";
@@ -111,7 +111,25 @@ describe("ui/listViewModel", () => {
     momentStub(dateStr, "YYYY-MM-DD", true);
   const getDayDateUID = (date: Moment) => date.format("YYYY-MM-DD");
 
-  const mockFile = (path: string): TFile => ({ path } as unknown as TFile);
+  const mockVault = {} as unknown as Vault;
+
+  const mockFile = (path: string): TFile => {
+    const parts = path.split("/");
+    const name = parts[parts.length - 1] ?? path;
+    const dot = name.lastIndexOf(".");
+    const basename = dot >= 0 ? name.slice(0, dot) : name;
+    const extension = dot >= 0 ? name.slice(dot + 1) : "";
+
+    return {
+      vault: mockVault,
+      path,
+      name,
+      parent: null,
+      stat: { ctime: 0, mtime: 0, size: 0 },
+      basename,
+      extension,
+    };
+  };
 
   const makeItem = (dateStr: string): ListItem => {
     const date = momentStub(dateStr, "YYYY-MM-DD", true);
